@@ -91,9 +91,9 @@ données ne serait plus `%APPDATA%\LlamaBuilder`.
 
 - 75 cas de test au vert (`ctest --preset debug`), compilation sans avertissement
   en `/W4 /permissive-`.
-- Commande générée pour un modèle situé dans `C:\dev\mes modèles\` (espace +
-  accent), copiée telle quelle et exécutée par `cmd.exe` : `llama-server`
-  journalise `loading model 'C:\dev\mes modèles\qwen3 27b q5.gguf'`, puis
+- Commande générée pour un modèle dont le chemin contient des espaces, copiée
+  telle quelle et exécutée par `cmd.exe` : `llama-server` journalise
+  `loading model 'C:\dev\llama_desktop_modeles\qwen3 27b q5.gguf'`, puis
   `model loaded` et `listening on http://127.0.0.1:8099`. Aucun flag rejeté.
   → critère d'acceptation n°2 tenu.
 - Repli sur la ressource embarquée vérifié en retirant le `params.json` voisin.
@@ -102,8 +102,9 @@ données ne serait plus `%APPDATA%\LlamaBuilder`.
 
 - `%APPDATA%\LlamaBuilder\settings.json` et `profiles.json` (profil « Mon Qwen —
   chemin avec espaces »).
-- `C:\dev\mes modèles\` : deux **liens matériels** vers des GGUF de
-  `C:\dev\llama-cpp\models` (aucun espace disque consommé).
+- `C:\dev\llama_desktop_modeles\` : deux **liens matériels** vers des GGUF de
+  `C:\dev\llama-cpp\models` (aucun espace disque consommé). C'est aussi le
+  `defaultModelsDir` de `settings.json`.
 
 ## Compiler
 
