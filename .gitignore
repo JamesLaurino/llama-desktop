@@ -4,15 +4,11 @@ out/
 cmake-build-*/
 *.user
 
-# Binaires hérités du squelette initial
-prog.exe
-
 # Journaux d'outillage
 aqtinstall.log
 
 # IDE
-.idea/workspace.xml
-.idea/shelf/
+.idea/
 .vs/
 
 # Windows

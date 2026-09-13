@@ -173,6 +173,9 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
 
 ## Compiler et lancer
 
+> Procédures complètes, variables d'environnement, emplacements des données et
+> dépannage : [`RUNBOOK.md`](RUNBOOK.md).
+
 ```powershell
 .\scripts\build.ps1              # Debug + tests
 .\scripts\build.ps1 -Config Release
