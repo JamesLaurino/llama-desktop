@@ -2,16 +2,23 @@
 #include "core/ParamRegistry.h"
 #include "core/Profile.h"
 #include "ui/AppController.h"
+#include "ui/LogModel.h"
+#include "ui/MonitorController.h"
 #include "ui/ParamFilterModel.h"
 #include "ui/ParamFormModel.h"
 #include "ui/ProfileListModel.h"
 
 #include <QAbstractItemModelTester>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <chrono>
+#include <cstdio>
+#include <thread>
 
 using namespace core;
 using namespace ui;
@@ -55,6 +62,44 @@ int rowOf(const ParamRegistry& registry, const ParamDef* param)
     return static_cast<int>(param - registry.params().constData());
 }
 
+/// Le binaire de test se relance lui-même comme faux llama-server.
+///
+/// La bascule et le comportement passent par une variable d'environnement :
+/// AppController construit les arguments depuis le profil, il n'y a pas de
+/// place pour les nôtres.
+constexpr const char* kFakeChildVar = "LLAMABUILDER_FAKE_CHILD";
+
+int fakeChild()
+{
+    if (qgetenv(kFakeChildVar) == QByteArrayLiteral("hang")) {
+        for (;;)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    // Format réel du build de référence, relevé dans llama-server-impl.dll.
+    std::fputs("srv    start_server: listening on http://127.0.0.1:8080\n", stdout);
+    std::fflush(stdout);
+    return 0;
+}
+
+/// Profil que la validation laisse lancer : nom, modèle existant, exécutable
+/// existant. L'exécutable est ce binaire de test, qui se comporte en enfant.
+bool prepareLaunchableProfile(AppController& controller, const QTemporaryDir& dir)
+{
+    const QString model = dir.filePath(QStringLiteral("modele.gguf"));
+    QFile file(model);
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    file.write("GGUF");
+    file.close();
+
+    controller.createProfile();
+    controller.renameProfile(controller.currentProfileId(), QStringLiteral("Profil lançable"));
+    controller.setModelPath(model);
+    controller.applySettings(QCoreApplication::applicationFilePath(), QString(), QString(), 1000,
+                             QStringLiteral("dark"));
+    return controller.canLaunch();
+}
+
 } // namespace
 
 class TestUiModels : public QObject
@@ -82,6 +127,15 @@ private slots:
     void controllerImportReplacesCurrentProfileEntirely();
     void controllerImportCreatesProfileAndSelectsIt();
     void controllerRefusesToImportChainedCommand();
+
+    void logModelKeepsOnlyTheLastLinesWhenSaturated();
+    void logModelColoursErrorsAndWarnings();
+    void logModelCopiesEverything();
+
+    void controllerRefusesToLaunchWhenValidationBlocks();
+    void controllerLaunchesAndReportsTheExitCode();
+    void controllerTracksThePidAndStopsTheProcess();
+    void controllerStopsThePreviousProcessThenRelaunches();
 
 private:
     ParamRegistry m_registry;
@@ -454,5 +508,168 @@ void TestUiModels::controllerRefusesToImportChainedCommand()
     QCOMPARE(controller.profiles()->rowCount(), 1);
 }
 
-QTEST_GUILESS_MAIN(TestUiModels)
+// --- Journal et exécution (§5.5, §10) ----------------------------------------
+
+void TestUiModels::logModelKeepsOnlyTheLastLinesWhenSaturated()
+{
+    LogModel model;
+    QAbstractItemModelTester tester(&model);
+
+    QStringList lines;
+    for (int i = 0; i < LogModel::kCapacity + 100; ++i)
+        lines.append(QStringLiteral("ligne %1").arg(i));
+    model.appendLines(lines);
+
+    // Tampon circulaire du §5.5 : la fin est conservée, pas le début.
+    QCOMPARE(model.count(), LogModel::kCapacity);
+    QCOMPARE(model.index(0).data(LogModel::LineRole).toString(), QStringLiteral("ligne 100"));
+    QCOMPARE(model.index(model.count() - 1).data(LogModel::LineRole).toString(),
+             QStringLiteral("ligne %1").arg(LogModel::kCapacity + 99));
+
+    model.clear();
+    QCOMPARE(model.count(), 0);
+}
+
+void TestUiModels::logModelColoursErrorsAndWarnings()
+{
+    QCOMPARE(LogModel::severityOf(QStringLiteral("srv: error loading model")), LogModel::Error);
+    QCOMPARE(LogModel::severityOf(QStringLiteral("srv: couldn't bind HTTP server socket")),
+             LogModel::Error);
+    QCOMPARE(LogModel::severityOf(QStringLiteral("warn: slow tokenizer")), LogModel::Warning);
+    QCOMPARE(LogModel::severityOf(QStringLiteral("main: build 10586")), LogModel::Normal);
+
+    // Les lignes que l'application insère elle-même ne viennent pas de
+    // llama.cpp et ne doivent pas se confondre avec lui.
+    LogModel model;
+    model.appendMeta(QStringLiteral("llama-server.exe -m a.gguf"));
+    QCOMPARE(model.index(0).data(LogModel::SeverityRole).toInt(),
+             static_cast<int>(LogModel::Meta));
+}
+
+void TestUiModels::logModelCopiesEverything()
+{
+    LogModel model;
+    model.appendLines({ QStringLiteral("une"), QStringLiteral("deux") });
+    QCOMPARE(model.allText(), QStringLiteral("une\ndeux"));
+}
+
+void TestUiModels::controllerRefusesToLaunchWhenValidationBlocks()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    controller.createProfile();
+
+    // Aucun modèle, aucun exécutable : la validation bloque déjà.
+    QVERIFY(!controller.canLaunch());
+    QVERIFY(!controller.launch());
+    QVERIFY(!controller.isRunning());
+    QCOMPARE(controller.logs()->count(), 0);
+}
+
+void TestUiModels::controllerLaunchesAndReportsTheExitCode()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    QVERIFY(prepareLaunchableProfile(controller, dir));
+
+    QString detectedUrl;
+    connect(&controller, &AppController::serverUrlChanged, &controller,
+            [&controller, &detectedUrl] {
+                if (!controller.serverUrl().isEmpty())
+                    detectedUrl = controller.serverUrl();
+            });
+
+    qputenv(kFakeChildVar, "server");
+    QVERIFY(controller.launch());
+    QVERIFY(controller.logsVisible());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isRunning(), 10000);
+
+    // La commande ouvre le journal, le code de sortie le ferme (§10).
+    QCOMPARE(controller.logs()->index(0).data(LogModel::LineRole).toString(),
+             controller.commandLine());
+    QVERIFY(controller.logs()->allText().contains(QStringLiteral("code de sortie 0")));
+    QVERIFY(!controller.runFailed());
+
+    // L'URL est prise dans le journal, pas recomposée depuis --host et --port.
+    QCOMPARE(detectedUrl, QStringLiteral("http://127.0.0.1:8080"));
+
+    // §10 : lastUsedAt est mis à jour au lancement.
+    QVERIFY(controller.profiles()
+                ->index(0)
+                .data(ProfileListModel::LastUsedRole)
+                .toString()
+            != QStringLiteral("jamais utilisé"));
+    // La pastille de la liste ne désigne plus personne.
+    QVERIFY(!controller.profiles()->index(0).data(ProfileListModel::RunningRole).toBool());
+}
+
+void TestUiModels::controllerTracksThePidAndStopsTheProcess()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    QVERIFY(prepareLaunchableProfile(controller, dir));
+
+    qputenv(kFakeChildVar, "hang");
+    QVERIFY(controller.launch());
+    QTRY_VERIFY_WITH_TIMEOUT(controller.isRunning(), 10000);
+
+    // Le moniteur isole la RAM et la VRAM de ce PID (§9).
+    QTRY_VERIFY_WITH_TIMEOUT(controller.monitor()->trackedPid() > 0, 10000);
+    QVERIFY(controller.profiles()->index(0).data(ProfileListModel::RunningRole).toBool());
+
+    // Un seul processus à la fois (§10).
+    QVERIFY(!controller.launch());
+
+    controller.killProcess();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isRunning(), 10000);
+    QCOMPARE(controller.monitor()->trackedPid(), 0);
+    // Un arrêt demandé n'est pas un échec, quel que soit le code rendu.
+    QVERIFY(!controller.runFailed());
+}
+
+void TestUiModels::controllerStopsThePreviousProcessThenRelaunches()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    QVERIFY(prepareLaunchableProfile(controller, dir));
+
+    qputenv(kFakeChildVar, "hang");
+    QVERIFY(controller.launch());
+    QTRY_VERIFY_WITH_TIMEOUT(controller.monitor()->trackedPid() > 0, 10000);
+    const qint64 first = controller.monitor()->trackedPid();
+
+    // §10 : lancer un autre profil propose d'arrêter le précédent.
+    controller.stopThenLaunch();
+    // L'arrêt propre ne fait rien sur un programme console : on force, comme le
+    // ferait un second clic, plutôt que d'attendre le délai de grâce.
+    controller.stopProcess();
+
+    QTRY_VERIFY_WITH_TIMEOUT(controller.monitor()->trackedPid() > 0
+                                 && controller.monitor()->trackedPid() != first,
+                             15000);
+    QVERIFY(controller.isRunning());
+
+    controller.killProcess();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isRunning(), 10000);
+}
+
+int main(int argc, char* argv[])
+{
+    if (qEnvironmentVariableIsSet(kFakeChildVar))
+        return fakeChild();
+
+    QCoreApplication app(argc, argv);
+    TestUiModels test;
+    return QTest::qExec(&test, argc, argv);
+}
+
 #include "test_uimodels.moc"

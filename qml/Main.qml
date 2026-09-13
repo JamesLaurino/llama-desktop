@@ -27,6 +27,35 @@ ApplicationWindow {
         value: window.visibility !== Window.Minimized && window.visibility !== Window.Hidden
     }
 
+    // §10 : ne jamais laisser de processus orphelin. Le refus de fermeture est
+    // le chemin normal ; AppController tue aussi sur aboutToQuit, pour les
+    // sorties qui ne passent pas par ici.
+    //
+    // Le drapeau n'est pas une précaution théorique : Qt.quit() redemande la
+    // fermeture des fenêtres, et à cet instant le processus tué n'a pas encore
+    // été moissonné — `App.running` est toujours vrai et le dialogue se
+    // rouvrirait indéfiniment.
+    property bool forceClose: false
+
+    onClosing: event => {
+        if (App.running && !window.forceClose) {
+            event.accepted = false
+            quitConfirm.open()
+        }
+    }
+
+    ConfirmDialog {
+        id: quitConfirm
+        title: qsTr("Un processus tourne encore")
+        message: qsTr("llama.cpp est toujours en cours d'exécution. L'arrêter et quitter ?")
+        confirmText: qsTr("Arrêter et quitter")
+        onConfirmed: {
+            window.forceClose = true
+            App.killProcess()
+            Qt.quit()
+        }
+    }
+
     SettingsWindow {
         id: settingsWindow
     }
@@ -330,6 +359,10 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+
+        LogPanel {
+            Layout.fillWidth: true
         }
 
         CommandBar {

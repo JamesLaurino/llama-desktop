@@ -8,10 +8,14 @@
 #include "ui/ProfileListModel.h"
 
 #include <QClipboard>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QProcess>
+#include <QUrl>
 
 namespace ui {
 namespace {
@@ -71,6 +75,8 @@ void AppController::initialise(const QString& paramsPath)
     m_form = new ParamFormModel(&m_registry, this);
     m_monitor = new MonitorController(this);
     m_monitor->setIntervalMs(m_settingsStore.settings().monitorIntervalMs);
+    m_logs = new LogModel(this);
+    connectRunner();
 
     connect(m_form, &ParamFormModel::valuesChanged, this, [this] {
         m_current.params = m_form->values();
@@ -413,6 +419,182 @@ QString AppController::importCommandAsNewProfile(const QString& text, const QStr
     m_profiles->refresh();
     selectProfile(profile.id);
     return profile.id;
+}
+
+// --- Exécution (§10) ---------------------------------------------------------
+
+void AppController::connectRunner()
+{
+    connect(&m_runner, &core::LlamaRunner::linesProduced, this, &AppController::onRunnerLines);
+    connect(&m_runner, &core::LlamaRunner::finished, this, &AppController::onRunnerFinished);
+    connect(&m_runner, &core::LlamaRunner::failedToStart, this, [this](const QString& reason) {
+        m_profiles->setRunningProfileId(QString());
+        m_logs->appendMeta(reason);
+        setRunStatus(reason, true);
+        emit runStateChanged();
+    });
+    connect(&m_runner, &core::LlamaRunner::stateChanged, this, [this] {
+        if (m_runner.state() == core::RunState::Running) {
+            // Le PID n'existe qu'une fois le processus démarré : c'est ici, et
+            // pas au lancement, que le moniteur apprend qui suivre (§9).
+            m_monitor->setTrackedPid(m_runner.pid());
+            setRunStatus(QStringLiteral("En cours — PID %1").arg(m_runner.pid()), false);
+        } else if (m_runner.state() == core::RunState::Stopping) {
+            setRunStatus(QStringLiteral("Arrêt demandé…"), m_runFailed);
+        }
+        emit runStateChanged();
+    });
+
+    // Un processus qui survivrait à l'application serait invisible et
+    // increvable (§10). La confirmation de fermeture est le chemin normal ;
+    // ceci en est le filet.
+    if (QCoreApplication* app = QCoreApplication::instance())
+        connect(app, &QCoreApplication::aboutToQuit, this, &AppController::killProcess);
+}
+
+bool AppController::launch()
+{
+    if (!m_hasCurrent || !canLaunch() || m_runner.isRunning())
+        return false;
+
+    const core::BuiltCommand command =
+        core::CommandBuilder::build(m_current, m_settingsStore.settings(), m_registry);
+
+    m_logs->clear();
+    setServerUrl({});
+    m_runFailed = false;
+    // La commande ouvre le journal : c'est elle qu'on relit quand on cherche
+    // pourquoi une exécution s'est mal passée.
+    m_logs->appendMeta(command.displayLine);
+
+    // Avant start() : sous Windows, QProcess émet started() sans repasser par la
+    // boucle d'événements, et « Démarrage… » écraserait « En cours ».
+    setLogsVisible(true);
+    setRunStatus(QStringLiteral("Démarrage…"), false);
+
+    if (!m_runner.start(command))
+        return false;
+
+    // La pastille de la liste désigne le profil qui tourne (§5.2).
+    m_profiles->setRunningProfileId(m_current.id);
+
+    // §10 : lastUsedAt est mis à jour au lancement. La liste n'est délibérément
+    // pas retriée dans la foulée — voir §5.2, le tri s'applique au chargement :
+    // déplacer la ligne sous le curseur au moment du clic serait déroutant.
+    m_current.lastUsedAt = QDateTime::currentDateTimeUtc();
+    persistCurrent();
+    m_profiles->notifyChanged(m_current.id);
+
+    emit runStateChanged();
+    return true;
+}
+
+void AppController::stopThenLaunch()
+{
+    if (!m_runner.isRunning()) {
+        launch();
+        return;
+    }
+    m_relaunchPending = true;
+    m_runner.requestStop();
+}
+
+void AppController::stopProcess()
+{
+    m_runner.requestStop();
+}
+
+void AppController::killProcess()
+{
+    m_relaunchPending = false;
+    m_runner.killNow();
+}
+
+void AppController::openServerInBrowser()
+{
+    if (!m_serverUrl.isEmpty())
+        QDesktopServices::openUrl(QUrl(m_serverUrl));
+}
+
+void AppController::copyLogs()
+{
+    if (QClipboard* clipboard = QGuiApplication::clipboard())
+        clipboard->setText(m_logs->allText());
+}
+
+void AppController::onRunnerLines(const QStringList& lines)
+{
+    m_logs->appendLines(lines);
+
+    if (m_current.binary != core::BinaryKind::Server)
+        return;
+
+    for (const QString& line : lines) {
+        if (core::ServerLog::isBindFailure(line)) {
+            setRunStatus(QStringLiteral("Le socket HTTP n'a pas pu être lié — port déjà pris ?"),
+                         true);
+            emit runStateChanged();
+            continue;
+        }
+        // L'URL est prise dans le journal, pas recomposée depuis --host et
+        // --port : c'est celle que le serveur a réellement liée (§5.5).
+        const QString url = core::ServerLog::listeningUrl(line);
+        if (!url.isEmpty())
+            setServerUrl(core::ServerLog::browsableUrl(url));
+    }
+}
+
+void AppController::onRunnerFinished(int exitCode, bool crashed, bool requested)
+{
+    m_monitor->setTrackedPid(0);
+    m_profiles->setRunningProfileId(QString());
+    setServerUrl({});
+
+    QString message;
+    bool failed = false;
+    if (requested) {
+        message = QStringLiteral("Arrêté.");
+    } else if (crashed) {
+        message = QStringLiteral("Le processus s'est interrompu.");
+        failed = true;
+    } else {
+        message = QStringLiteral("Terminé — code de sortie %1").arg(exitCode);
+        failed = (exitCode != 0);
+    }
+
+    m_logs->appendMeta(message);
+    setRunStatus(message, failed);
+    emit runStateChanged();
+
+    if (m_relaunchPending) {
+        m_relaunchPending = false;
+        launch();
+    }
+}
+
+void AppController::setRunStatus(const QString& status, bool failed)
+{
+    if (m_runStatus == status && m_runFailed == failed)
+        return;
+    m_runStatus = status;
+    m_runFailed = failed;
+    emit runStateChanged();
+}
+
+void AppController::setServerUrl(const QString& url)
+{
+    if (m_serverUrl == url)
+        return;
+    m_serverUrl = url;
+    emit serverUrlChanged();
+}
+
+void AppController::setLogsVisible(bool visible)
+{
+    if (m_logsVisible == visible)
+        return;
+    m_logsVisible = visible;
+    emit logsVisibleChanged();
 }
 
 void AppController::persistCurrent()

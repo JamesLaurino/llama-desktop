@@ -13,6 +13,7 @@ endfunction()
 
 llamabuilder_add_test(test_commandbuilder SOURCES test_commandbuilder.cpp)
 llamabuilder_add_test(test_commandparser SOURCES test_commandparser.cpp)
+llamabuilder_add_test(test_runner SOURCES test_runner.cpp)
 llamabuilder_add_test(test_store SOURCES test_store.cpp)
 
 # Les sources de présentation sont recompilées ici : elles vivent dans la cible

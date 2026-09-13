@@ -63,7 +63,7 @@ sont pas sur le `PATH` et Windows n'affiche aucun message.
 ## 3. Compiler
 
 ```powershell
-.\scripts\build.ps1                      # Debug + les 169 tests
+.\scripts\build.ps1                      # Debug + les 199 tests
 .\scripts\build.ps1 -Config Release
 .\scripts\build.ps1 -NoTests             # compile seulement
 .\scripts\build.ps1 -Clean               # supprime build\msvc puis reconfigure
@@ -88,7 +88,7 @@ changer de configuration.
 ### Cibles utiles
 
 ```powershell
-cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 20 QML
+cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 21 QML
 cmake --build build\msvc --config Debug --target llamabuilder-cli
 ```
 
@@ -196,13 +196,20 @@ revendiquer la même écriture : le fichier serait refusé, avec le nom du coupa
 .\build\msvc\Debug\llamabuilder-cli.exe monitor          # un relevé RAM / VRAM
 .\build\msvc\Debug\llamabuilder-cli.exe monitor --pid 14260   # + la part d'un processus
 .\build\msvc\Debug\llamabuilder-cli.exe parse "<ligne>"  # relit une ligne et la régénère
+.\build\msvc\Debug\llamabuilder-cli.exe run "Mon Qwen"   # lance le profil et diffuse son journal
 ```
 
 Options : `--params-file <chemin>` pour tester un registre sans toucher à
 `%APPDATA%` ; `--pid N` pour isoler un processus.
 
 Codes de sortie : `0` succès · `1` usage · `2` `params.json` inutilisable ·
-`3` profil introuvable · `4` ligne de commande inexploitable.
+`3` profil introuvable · `4` ligne de commande inexploitable ·
+`5` processus impossible à démarrer. Sinon, `run` rend **le code de sortie du
+processus lancé**.
+
+`run` utilise le même `LlamaRunner` que l'interface : c'est le moyen de vérifier
+l'exécution sans passer par le QML. Ctrl+C atteint tout le groupe de console,
+l'enfant le reçoit donc aussi.
 
 `parse` est le pendant de `show` : l'un génère, l'autre relit. Il imprime le
 binaire déduit, le modèle, les paramètres reconnus, les arguments libres, les
@@ -242,7 +249,7 @@ dans le noyau, pas dans l'affichage.
 ## 7. Tests
 
 ```powershell
-ctest --preset debug                     # les 5 binaires, 169 cas
+ctest --preset debug                     # les 6 binaires, 199 cas
 ctest --preset debug -R uimodels         # un seul binaire
 ctest --preset debug -V                  # sortie complète
 ```
@@ -251,8 +258,9 @@ ctest --preset debug -V                  # sortie complète
 |---|---|---|
 | `test_commandbuilder` | 53 | citation Windows, ordre des arguments, tous les types de paramètres |
 | `test_commandparser` | 55 | alias longs, `--x=y`, continuations de ligne, aller-retour, drapeaux ambigus |
+| `test_runner` | 23 | découpage du flux, ANSI, journal de llama-server, arrêt et escalade, orphelins |
 | `test_store` | 22 | E/S atomiques, anti-rebond, fichiers corrompus, aller-retour JSON |
-| `test_uimodels` | 17 | rôles des modèles, filtrage par section et par binaire, CRUD, validation, import |
+| `test_uimodels` | 24 | rôles des modèles, filtrage, CRUD, validation, import, journal, exécution |
 | `test_monitor` | 22 | seuils aux bornes, diviseur 1024³, NVML absente, sentinelle WDDM, fil dédié |
 
 Exécution directe, avec les options de QTest :
@@ -266,6 +274,12 @@ Exécution directe, avec les options de QTest :
 Les tests lisent `resources\params.json` **depuis les sources**
 (`LLAMABUILDER_PARAMS_JSON`), jamais la copie embarquée : une correction du
 registre est donc couverte immédiatement.
+
+`test_runner` et `test_uimodels` ont besoin d'un vrai processus à surveiller :
+ils **se relancent eux-mêmes** comme faux enfant. La bascule se fait sur la
+variable d'environnement `LLAMABUILDER_FAKE_CHILD`, posée par le test avant de
+lancer l'enfant, qui en hérite. Ne la pose jamais dans ton terminal : le binaire
+de test se comporterait en enfant au lieu d'exécuter la suite.
 
 ### Ce qu'il faut vérifier à la main dans l'interface
 
@@ -293,6 +307,21 @@ registre est donc couverte immédiatement.
    modèle. Vérifie qu'un drapeau inconnu se retrouve bien en arguments libres.
 10. **Copier** puis **Importer** la même commande : le profil obtenu doit produire
     une commande identique. C'est la symétrie des deux sens, vérifiable à l'œil.
+11. **Lancer** : le panneau s'ouvre, la commande figure en tête du journal en
+    couleur d'accent, les lignes défilent, le statut passe à
+    « En cours — PID *n* » et une pastille verte apparaît sur le profil. Les
+    jauges affichent « llama sur le GPU » et la part RAM du processus.
+12. Sur la ligne `listening on http://…`, le bouton **Ouvrir dans le navigateur**
+    apparaît. Avec `--host 0.0.0.0`, il doit ouvrir `127.0.0.1`.
+13. **Arrêter** : le bouton devient « Forcer » pendant cinq secondes — `terminate()`
+    ne fait rien sur un programme console, le processus est tué à l'échéance. Un
+    clic sur « Forcer » n'attend pas. Le statut finit sur « Arrêté. », **sans**
+    rouge : un arrêt demandé n'est pas un échec.
+14. **Lancer** un autre profil pendant qu'un processus tourne : une confirmation
+    propose d'arrêter le précédent, puis le nouveau démarre tout seul.
+15. **Fermer la fenêtre** pendant une exécution : la fermeture est refusée et la
+    confirmation s'affiche. Après « Arrêter et quitter », vérifie avec
+    `Get-Process llama-server` qu'aucun processus ne subsiste.
 
 ---
 
@@ -319,16 +348,17 @@ CMakeLists.txt CMakePresets.json
 scripts/       dev-env.ps1 (environnement) · build.ps1 (compile + tests)
 resources/     params.json (47 paramètres, 7 sections) · fonts/ (Inter, JetBrains Mono, OFL)
 src/core/      noyau sans UI, Qt6::Core seul — AppPaths CommandBuilder CommandParser
-               JsonFile ParamRegistry Profile ProfileStore Settings SettingsStore
+               JsonFile LlamaRunner ParamRegistry Profile ProfileStore Settings
+               SettingsStore
 src/monitor/   seule cible touchant windows.h et psapi — MonitorSample NvmlLibrary
                NvmlMonitor SystemMonitor MonitorWorker
 src/ui/        AppController (façade unique) · ParamFormModel · ParamFilterModel
-               ProfileListModel · MonitorController · Fonts
+               ProfileListModel · MonitorController · LogModel · Fonts
 src/app/       main.cpp — QGuiApplication + QQmlApplicationEngine
 src/cli/       main.cpp — harnais console
-qml/           20 fichiers, Theme.qml en singleton
-tests/         test_commandbuilder · test_commandparser · test_store · test_uimodels
-               test_monitor
+qml/           21 fichiers, Theme.qml en singleton
+tests/         test_commandbuilder · test_commandparser · test_runner · test_store
+               test_uimodels · test_monitor
 mardown/       cahier des charges
 build/msvc/    Debug\ et Release\ (ignoré par git)
 ```

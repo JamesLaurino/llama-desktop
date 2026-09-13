@@ -6,10 +6,12 @@
 //   llamabuilder-cli demo                   imprime la commande d'un profil d'exemple
 //   llamabuilder-cli monitor [--pid N]      un relevé RAM / VRAM, comparable à nvidia-smi
 //   llamabuilder-cli parse "<ligne>"        relit une ligne de commande et la régénère
+//   llamabuilder-cli run <nom|id>           lance le profil et diffuse son journal
 
 #include "core/AppPaths.h"
 #include "core/CommandBuilder.h"
 #include "core/CommandParser.h"
+#include "core/LlamaRunner.h"
 #include "core/ParamRegistry.h"
 #include "core/Profile.h"
 #include "core/ProfileStore.h"
@@ -214,6 +216,50 @@ int printParsedCommand(const QString& line, const Settings& settings,
     return 0;
 }
 
+/// Lance un profil et diffuse son journal. Pendant console du panneau de logs :
+/// même LlamaRunner, sans interface, pour valider l'exécution isolément.
+int runProfile(const Profile& profile, const Settings& settings, const ParamRegistry& registry)
+{
+    const BuiltCommand command = CommandBuilder::build(profile, settings, registry);
+    if (command.program.trimmed().isEmpty()) {
+        err() << "Aucun exécutable pour ce binaire : renseigne son chemin dans les Réglages.\n"
+              << Qt::flush;
+        return 5;
+    }
+
+    out() << command.displayLine << "\n\n" << Qt::flush;
+
+    LlamaRunner runner;
+    int exitCode = 0;
+
+    QObject::connect(&runner, &LlamaRunner::linesProduced, [](const QStringList& lines) {
+        for (const QString& line : lines)
+            out() << line << "\n";
+        out() << Qt::flush;
+    });
+    QObject::connect(&runner, &LlamaRunner::failedToStart, [&exitCode](const QString& reason) {
+        err() << reason << "\n" << Qt::flush;
+        exitCode = 5;
+        QCoreApplication::quit();
+    });
+    QObject::connect(&runner, &LlamaRunner::finished,
+                     [&exitCode](int code, bool crashed, bool requested) {
+                         out() << "\n[terminé — code " << code << (crashed ? ", interrompu" : "")
+                               << (requested ? ", arrêt demandé" : "") << "]\n"
+                               << Qt::flush;
+                         exitCode = code;
+                         QCoreApplication::quit();
+                     });
+
+    if (!runner.start(command)) {
+        err() << runner.lastError() << "\n" << Qt::flush;
+        return 5;
+    }
+    // Ctrl+C atteint le groupe de console entier : l'enfant le reçoit aussi.
+    QCoreApplication::exec();
+    return exitCode;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -226,13 +272,14 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     parser.setApplicationDescription(
         QStringLiteral("Harnais de validation du noyau LlamaBuilder.\n\n"
-                       "Commandes : params | list | show <nom|id> | demo | monitor | parse"));
+                       "Commandes : params | list | show <nom|id> | demo | monitor | parse "
+                       "| run <nom|id>"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("commande"),
-                                 QStringLiteral("params, list, show, demo, monitor ou parse"));
+                                 QStringLiteral("params, list, show, demo, monitor, parse ou run"));
     parser.addPositionalArgument(QStringLiteral("cible"),
-                                 QStringLiteral("nom ou identifiant de profil (pour show)"));
+                                 QStringLiteral("nom ou identifiant de profil (pour show et run)"));
 
     const QCommandLineOption paramsFileOption(
         QStringLiteral("params-file"),
@@ -329,8 +376,22 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+    if (command == QLatin1String("run")) {
+        const QString needle = positional.value(1);
+        if (needle.isEmpty()) {
+            err() << "Usage : llamabuilder-cli run <nom|id>\n" << Qt::flush;
+            return 1;
+        }
+        const Profile* profile = findProfile(profileStore, needle);
+        if (!profile) {
+            err() << "Aucun profil ne correspond à « " << needle << " ».\n" << Qt::flush;
+            return 3;
+        }
+        return runProfile(*profile, settingsStore.settings(), registry);
+    }
+
     err() << "Commande inconnue : « " << command
-          << " ». Attendu : params, list, show, demo, monitor ou parse.\n"
+          << " ». Attendu : params, list, show, demo, monitor, parse ou run.\n"
           << Qt::flush;
     return 1;
 }

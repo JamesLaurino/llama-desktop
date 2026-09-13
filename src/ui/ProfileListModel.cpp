@@ -41,7 +41,7 @@ QVariant ProfileListModel::data(const QModelIndex& index, int role) const
             ? profile.lastUsedAt.toLocalTime().toString(QStringLiteral("dd/MM/yyyy HH:mm"))
             : QStringLiteral("jamais utilisé");
     case RunningRole:
-        return false;
+        return !m_runningId.isEmpty() && profile.id == m_runningId;
     default:
         return {};
     }
@@ -73,6 +73,16 @@ void ProfileListModel::notifyChanged(const QString& id)
         return;
     const QModelIndex idx = index(row);
     emit dataChanged(idx, idx);
+}
+
+void ProfileListModel::setRunningProfileId(const QString& id)
+{
+    if (m_runningId == id)
+        return;
+    const QString previous = m_runningId;
+    m_runningId = id;
+    notifyChanged(previous);
+    notifyChanged(id);
 }
 
 int ProfileListModel::rowOfId(const QString& id) const

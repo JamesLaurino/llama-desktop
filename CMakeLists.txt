@@ -40,6 +40,8 @@ qt_add_library(llamabuilder_core STATIC
     src/core/CommandParser.h
     src/core/JsonFile.cpp
     src/core/JsonFile.h
+    src/core/LlamaRunner.cpp
+    src/core/LlamaRunner.h
     src/core/ParamRegistry.cpp
     src/core/ParamRegistry.h
     src/core/Profile.cpp
@@ -97,6 +99,8 @@ set(LLAMABUILDER_UI_SOURCES
     src/ui/AppController.h
     src/ui/Fonts.cpp
     src/ui/Fonts.h
+    src/ui/LogModel.cpp
+    src/ui/LogModel.h
     src/ui/MonitorController.cpp
     src/ui/MonitorController.h
     src/ui/ParamFilterModel.cpp
@@ -148,6 +152,7 @@ qt_add_qml_module(llamabuilder
         qml/Gauge.qml
         qml/ImportDialog.qml
         qml/InfoTip.qml
+        qml/LogPanel.qml
         qml/MonitorCard.qml
         qml/NamePrompt.qml
         qml/ParamRow.qml

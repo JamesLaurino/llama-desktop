@@ -27,7 +27,7 @@ public:
         ModelPathRole,
         BinaryRole,
         LastUsedRole,
-        RunningRole, ///< toujours faux tant que la phase 4 n'a pas de processus
+        RunningRole, ///< le profil est celui du processus en cours
     };
 
     explicit ProfileListModel(core::ProfileStore* store, QObject* parent = nullptr);
@@ -41,11 +41,15 @@ public:
     /// À appeler quand un seul profil déjà présent a changé d'apparence.
     void notifyChanged(const QString& id);
 
+    /// Profil dont le processus tourne, pour la pastille de la liste (§5.2).
+    void setRunningProfileId(const QString& id);
+
     int rowOfId(const QString& id) const;
     QString idAt(int row) const;
 
 private:
     core::ProfileStore* m_store;
+    QString m_runningId;
 };
 
 } // namespace ui

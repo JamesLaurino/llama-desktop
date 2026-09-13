@@ -10,7 +10,8 @@
 | **2** | Coque Qt Quick : thème, liste de profils, formulaire dynamique, barre de commande, Réglages | **terminée** |
 | **3** | Monitoring : `NvmlMonitor`, `SystemMonitor`, jauges animées | **terminée** |
 | **3bis** | Import : `CommandParser`, alias dans `params.json`, dialogue « Importer » | **terminée** |
-| 4 | Exécution : `LlamaRunner`, panneau de logs, validation | à faire |
+| **4 A** | Exécution : `LlamaRunner`, panneau de logs, Lancer / Arrêter, navigateur, fermeture propre | **terminée** |
+| 4 B | Validation §8 : bandeaux bloquants et avertissements | à faire |
 | 5 | Finitions : recherche, duplication au clavier, géométrie, raccourcis | à faire |
 
 ## Environnement retenu
@@ -254,6 +255,61 @@ Points d'architecture :
 - **L'import remplace, il ne fusionne pas.** Les paramètres absents de la ligne
   collée disparaissent du profil ; le nom, les notes et l'identifiant survivent.
 
+## Phase 4 A — exécution
+
+```
+src/core/     LlamaRunner                       QProcess, découpage du flux, arrêt
+              namespace ServerLog               lecture du journal de llama-server
+src/ui/       LogModel                          tampon circulaire de 5 000 lignes
+              AppController : launch / stopProcess / killProcess / stopThenLaunch
+                              openServerInBrowser / copyLogs / logs / running…
+              ProfileListModel::setRunningProfileId   pastille de la liste
+qml/          LogPanel                          panneau coulissant du §5.5
+              CommandBar : « Lancer », « Arrêter », « Journal »
+              Main : confirmation de fermeture
+src/cli/      sous-commande run <nom|id>
+tests/test_runner.cpp                           23 cas, avec un faux enfant réel
+tests/test_uimodels.cpp                         7 cas de journal et d'exécution
+```
+
+Points d'architecture :
+
+- **Les formats du journal sont relevés, pas devinés.** Le §5.5 demande de
+  détecter « la ligne signalant que le serveur écoute » sans dire laquelle.
+  `llama-server.exe` ne fait que 9 Ko — c'est un lanceur ; les chaînes de format
+  vivent dans `llama-server-impl.dll` : `srv %12.*s: listening on %s` et
+  `srv %12.*s: couldn't bind HTTP server socket, hostname: %s, port: %d`.
+- **L'URL est prise dans le journal, jamais recomposée** depuis `--host` et
+  `--port` : c'est celle que le serveur a réellement liée.
+- **`\r` sépare les lignes comme `\n`.** llama.cpp réécrit la ligne courante pour
+  sa progression ; sans cela le chargement d'un modèle arriverait comme une seule
+  ligne de plusieurs kilo-octets. Conséquence assumée : une barre de progression
+  apparaît comme des lignes successives.
+- **Les lignes sortent par lots de 50 ms.** Un signal par ligne sature la boucle
+  d'événements pendant le chargement, qui en produit des centaines par seconde.
+- **Un modèle, pas un `TextArea`.** 5 000 lignes dans un document unique font
+  remettre en page tout le document à chaque ajout ; une `ListView` ne dispose que
+  ses délégués visibles.
+- **`terminate()` ne fait rien sur un programme console Windows** : il poste
+  `WM_CLOSE`, qu'un programme sans fenêtre ne voit pas. Le délai de grâce du §10
+  se solde donc toujours par le `kill()`. Le bouton devient « Forcer » pendant ce
+  délai pour ne pas imposer les cinq secondes.
+- **Deux filets contre les orphelins** : la confirmation de fermeture, et un
+  `kill()` sur `aboutToQuit` plus un autre dans le destructeur de `LlamaRunner`.
+  Un test vérifie par `OpenProcess` qu'aucun processus ne survit à la destruction.
+
+### Écarts assumés propres à l'exécution
+
+- **`0.0.0.0` est réécrit en `127.0.0.1`** pour le bouton du navigateur : l'adresse
+  veut dire « toutes les interfaces » côté serveur et ne se route pas côté client.
+- **Le panneau pousse le formulaire**, il ne le recouvre pas. Un tiroir masquerait
+  les jauges, précisément ce qu'on regarde pendant un chargement.
+- **La liste n'est pas retriée au lancement.** Le §10 impose de mettre `lastUsedAt`
+  à jour ; le tri du §5.2 reste appliqué au chargement, pour ne pas déplacer la
+  ligne sous le curseur au moment du clic.
+- **Un arrêt demandé n'est jamais rouge**, quel que soit le code rendu par un
+  processus tué. Seuls un code non nul non demandé et une interruption le sont.
+
 ### Contrat à ne pas casser
 
 L'application définit `applicationName` mais **pas** `organizationName` :
@@ -263,12 +319,12 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
 
 ## Validation exécutée
 
-- **169 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
-  53 + 55 + 22 + 17 + 22.
+- **199 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
+  53 + 55 + 23 + 22 + 24 + 22.
 - Compilation **sans aucun avertissement** en `/W4 /permissive-`, en Debug comme
   en Release. Les en-têtes Qt sont traités comme externes ; `C4702`, émis depuis
   `qvariant.h` et `qjsengine.h` à la génération de code, est désactivé.
-- **`qmllint` sans aucun diagnostic** sur les 20 fichiers QML
+- **`qmllint` sans aucun diagnostic** sur les 21 fichiers QML
   (`cmake --build build/msvc --config Debug --target all_qmllint`).
 - **Jauges confrontées à `nvidia-smi`, un `llama-server` chargé** (Qwen3 27B Q5,
   `-ngl 99 -c 2048`) : `llamabuilder-cli monitor --pid <PID>` rapporte
@@ -294,6 +350,22 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
   déduit du fichier de modèle, et le profil écrit dans `%APPDATA%` contient
   exactement les 8 clés avec `--mlock` en arguments libres. Le profil de test a
   ensuite été retiré du dépôt de profils.
+- **Exécution exercée de bout en bout dans l'interface**, sur un vrai
+  `llama-server` chargé avec Qwen3 27B Q5 (`-ngl 0 -c 512 --no-warmup`, en CPU :
+  la VRAM était occupée par ComfyUI). Le panneau s'ouvre, la commande en tête du
+  journal, les avertissements de llama.cpp colorés, le statut passe à
+  « En cours — PID 20896 », la pastille verte apparaît sur le profil, le moniteur
+  affiche « llama sur le GPU » et « llama : 2,2 Go », et « Ouvrir dans le
+  navigateur » apparaît sur la ligne `listening on http://127.0.0.1:8099`.
+  « Arrêter » passe à « Forcer » pendant le délai de grâce, puis le statut devient
+  « Arrêté. » sans rouge et aucun processus ne survit.
+- **Fermeture avec processus en cours** : la fenêtre refuse de se fermer, la
+  confirmation s'affiche, et « Arrêter et quitter » ferme les deux. Vérifié par
+  `Get-Process` : ni `llama-server` ni `llamabuilder` ne subsiste.
+- **`llamabuilder-cli run`** confronté au vrai binaire : la sortie fusionnée est
+  restituée telle quelle et le code de sortie remonte inchangé.
+- Le profil d'essai a été retiré et `profiles.json` restauré à l'octet près depuis
+  une sauvegarde prise avant modification.
 
 ### Artefacts de test créés hors du dépôt (supprimables)
 
@@ -322,12 +394,27 @@ Les chemins de Visual Studio et de Qt sont découverts automatiquement
 Le script doit être appelé depuis une session où `scripts\dev-env.ps1` a été
 sourcé, sinon les DLL Qt manquent au lancement.
 
-## Prochaine étape — phase 4
+## Prochaine étape — phase 4 B
 
-`LlamaRunner`, panneau de logs, « Arrêter », ouverture du navigateur, bandeaux
-d'avertissement. `MonitorController::setTrackedPid()` est déjà en place et testé :
-il suffira de lui passer le PID du `QProcess`. Le parcours « coller une commande
-trouvée en ligne, puis la lancer » sera alors complet.
+La validation du §8 : passer de l'unique motif bloquant actuel à une liste de
+diagnostics à deux sévérités, affichés en bandeau sous l'en-tête.
+
+Forme retenue : une fonction **pure** `core/Validation.h`, prenant les faits déjà
+résolus (existence des fichiers, taille du modèle, VRAM totale, port occupé) que
+`AppController` rassemble. Les règles restent testables sans disque ni GPU.
+
+Trois points à trancher au moment de l'écrire :
+
+- Le test de port occupé lie un socket ; le résultat doit être mémorisé par
+  `host:port`, sinon chaque frappe en crée un.
+- Le §8 veut avertir quand `-ctk`/`-ctv` ≠ `f16` « sans `-fa` ». Dans ce build
+  `-fa` vaut `auto` par défaut : n'avertir que sur un `off` explicite, sinon
+  l'avertissement s'affiche sur la configuration par défaut.
+- « `-ngl` élevé » n'est pas défini par le §8 : seuil à fixer et à figer dans un
+  test. L'avertissement reste muet quand NVML est absent.
+
+Puis la phase 5 : recherche, duplication au clavier, géométrie de fenêtre,
+raccourcis, notes de profil.
 
 Deux arbitrages de la phase 1 restent ouverts, décrits plus haut : la section
 « Échantillonnage » visible pour `llama-server` contre le §5.3, et `-lm` en

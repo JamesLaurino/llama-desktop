@@ -37,6 +37,14 @@ Rectangle {
         id: importDialog
     }
 
+    ConfirmDialog {
+        id: relaunchConfirm
+        title: qsTr("Un processus tourne déjà")
+        message: qsTr("Un seul processus llama.cpp peut tourner à la fois. Arrêter celui en cours et lancer ce profil ?")
+        confirmText: qsTr("Arrêter et lancer")
+        onConfirmed: App.stopThenLaunch()
+    }
+
     ColumnLayout {
         id: layout
         anchors.fill: parent
@@ -113,25 +121,50 @@ Rectangle {
                     FlatButton {
                         Layout.preferredWidth: 120
                         variant: "primary"
-                        // L'exécution arrive en phase 4 : le bouton reste en
-                        // place pour figer la disposition, la validation est déjà
-                        // réelle et son message est affiché ci-dessous.
                         text: qsTr("Lancer")
-                        enabled: false
+                        enabled: App.canLaunch
+                        // Un seul processus à la fois (§10) : relancer propose
+                        // d'arrêter le précédent plutôt que de refuser.
+                        onClicked: {
+                            if (App.running)
+                                relaunchConfirm.open()
+                            else
+                                App.launch()
+                        }
+
+                        ToolTip.visible: hovered && !App.canLaunch
+                                         && App.validationError.length > 0
+                        ToolTip.delay: Theme.tooltipDelay
+                        ToolTip.text: App.validationError
                     }
 
                     FlatButton {
                         variant: "danger"
-                        text: qsTr("Arrêter")
-                        visible: false
+                        visible: App.running
+                        // terminate() ne fait rien sur un programme console
+                        // Windows : le second clic n'attend plus la fin du délai
+                        // de grâce et tue.
+                        text: App.stopping ? qsTr("Forcer") : qsTr("Arrêter")
+                        onClicked: App.stopProcess()
                     }
+                }
+
+                FlatButton {
+                    Layout.preferredWidth: 120
+                    variant: "ghost"
+                    text: qsTr("Journal")
+                    visible: !App.logsVisible && App.logs.count > 0
+                    onClicked: App.logsVisible = true
                 }
             }
         }
 
+        // Les bandeaux d'avertissement du §8 arrivent avec la validation
+        // complète ; seul le motif bloquant est affiché ici.
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.s2
+            visible: App.validationError.length > 0
 
             Text {
                 text: "!"
@@ -143,9 +176,7 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                text: App.validationError.length > 0
-                      ? App.validationError
-                      : qsTr("L'exécution depuis l'application arrive en phase 4 ; la commande est copiable dès maintenant.")
+                text: App.validationError
                 color: Theme.textDim
                 wrapMode: Text.WordWrap
                 font.family: Theme.fontUi
