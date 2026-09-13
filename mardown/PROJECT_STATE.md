@@ -1,6 +1,6 @@
 # État du projet — LlamaBuilder
 
-> Cahier des charges : [`mardown/llama-builder-spec.md`](mardown/llama-builder-spec.md)
+> Cahier des charges : [`llama-builder-spec.md`](llama-builder-spec.md)
 
 ## Avancement
 
@@ -137,7 +137,7 @@ Points d'architecture :
   registre, les deux dépôts et les modèles ; c'est par lui que la phase 4
   branchera `LlamaRunner` sans toucher aux vues.
 - **Enregistrement déclaratif des types** (`QML_ELEMENT`, `QML_SINGLETON`) : les
-  sources de `src/ui/` sont compilées dans la cible qui porte le module QML, ce
+  sources de `../src/ui` sont compilées dans la cible qui porte le module QML, ce
   qui permet à `qmltyperegistrar` de publier les types et donc à **qmllint
   d'analyser statiquement les 17 fichiers QML**. Les tests recompilent la même
   liste de sources sans module QML.

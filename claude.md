@@ -9,5 +9,5 @@ Tu agis en tant que **Senior Staff Engineer** et **Architecte Logiciel**, expert
 * Avant toute implémentation ou modification de code, commence par une phase d’analyse.
 * Présente cette analyse de manière explicite et attends une validation explicite avant d’implémenter quoi que ce soit.
 * Ne passe jamais directement à l’implémentation sans accord clair de l’utilisateur sur la solution retenue.
-* Mettre à jours le fichier `PROJECT_STATE.md` quand tu as fini
+* Mettre à jours le fichier `mardown/PROJECT_STATE.md` quand tu as fini
 * Proposer un nom de commit pertinent

@@ -2,7 +2,7 @@
 
 Comment compiler, lancer, tester et dépanner. Pour l'état d'avancement, voir
 [`PROJECT_STATE.md`](PROJECT_STATE.md) ; pour le périmètre fonctionnel,
-[`mardown/llama-builder-spec.md`](mardown/llama-builder-spec.md).
+[`llama-builder-spec.md`](llama-builder-spec.md).
 
 ---
 
@@ -15,7 +15,7 @@ Comment compiler, lancer, tester et dépanner. Pour l'état d'avancement, voir
 | Qt | **6.10.3 `msvc2022_64`** sous `C:\Qt` | glob `C:\Qt\6.*.*\msvc*_64`, version la plus récente |
 | llama.cpp | build **b10586** CUDA (référence) | déclaré dans les Réglages de l'application |
 
-Rien n'est codé en dur, sauf `CMAKE_PREFIX_PATH` dans `CMakePresets.json`
+Rien n'est codé en dur, sauf `CMAKE_PREFIX_PATH` dans `../CMakePresets.json`
 (`C:/Qt/6.10.3/msvc2022_64`) — à corriger si tu changes de version de Qt.
 
 Surcharges : `$env:VS_DIR`, `$env:QT_DIR` (doit contenir `bin\qmake.exe`).
@@ -331,7 +331,7 @@ de test se comporterait en enfant au lieu d'exécuter la suite.
 |---|---|---|
 | L'exe se ferme sans rien afficher | DLL Qt absentes du `PATH` | `. .\scripts\dev-env.ps1` dans le terminal courant |
 | `Aucun Qt 6 MSVC x64 trouvé sous C:\Qt` | Qt ailleurs | `$env:QT_DIR = 'D:\Qt\6.10.3\msvc2022_64'` |
-| `Could not find a package configuration file providing Qt6` | `CMakePresets.json` pointe une version de Qt absente | corriger `CMAKE_PREFIX_PATH`, puis `.\scripts\build.ps1 -Clean` |
+| `Could not find a package configuration file providing Qt6` | `../CMakePresets.json` pointe une version de Qt absente | corriger `CMAKE_PREFIX_PATH`, puis `.\scripts\build.ps1 -Clean` |
 | `vswhere.exe introuvable` | Visual Studio non installé, ou seuls les Build Tools | `$env:VS_DIR = '<racine>'` |
 | Fenêtre vide, console silencieuse | échec de chargement QML | lancer la version **Debug**, la console porte le message |
 | Erreur `module "LlamaBuilder" is not installed` | exécution depuis un dossier sans les métadonnées du module | lancer l'exe depuis `build\msvc\<Config>\`, ne pas le déplacer seul |
@@ -377,5 +377,5 @@ CPU · Échantillonnage · Serveur · Avancé.
 - **Style `Basic` uniquement.** `Fusion` et `Windows` imposent leurs couleurs ;
   chaque contrôle est redécoré pour `Basic`.
 - **Aucune couleur en littéral hors de `Theme.qml`.**
-- **`src/core/` ne dépend que de `Qt6::Core`** : aucun type Qt Quick ne doit y
+- **`../src/core` ne dépend que de `Qt6::Core`** : aucun type Qt Quick ne doit y
   entrer.
