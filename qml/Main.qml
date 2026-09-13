@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtQuick.Window
 
 // Disposition du §5.1 : profils à gauche, formulaire au centre, barre de commande
 // toujours visible en bas. La restauration de la géométrie arrive en phase 5.
@@ -17,6 +18,14 @@ ApplicationWindow {
     visible: true
     color: Theme.bg
     title: App.hasProfile ? "LlamaBuilder — " + App.profileName : "LlamaBuilder"
+
+    // Le §9 impose d'arrêter le sondage quand la fenêtre est minimisée. Le fil
+    // du moniteur reste vivant et NVML initialisé : la reprise est immédiate.
+    Binding {
+        target: App.monitor
+        property: "active"
+        value: window.visibility !== Window.Minimized && window.visibility !== Window.Hidden
+    }
 
     SettingsWindow {
         id: settingsWindow
@@ -131,26 +140,12 @@ ApplicationWindow {
                         implicitHeight: Theme.s1
                     }
 
-                    // Emplacement des jauges VRAM / RAM du §5.1, animées en
-                    // phase 3 ; la carte est posée dès maintenant pour figer
-                    // l'espacement du panneau.
-                    Rectangle {
+                    // Jauges VRAM / RAM du §5.1. Le sondage est piloté par la
+                    // visibilité de la fenêtre, voir `monitorActive` plus haut.
+                    MonitorCard {
                         Layout.fillWidth: true
                         Layout.leftMargin: Theme.s5
                         Layout.rightMargin: Theme.s5
-                        Layout.preferredHeight: 56
-                        radius: Theme.radiusCard
-                        color: Theme.surface
-                        border.width: 1
-                        border.color: Theme.border
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: qsTr("Jauges VRAM et RAM — phase 3")
-                            color: Theme.textDim
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fontSizeSmall
-                        }
                     }
 
                     // --- Carte « Profil » ----------------------------------

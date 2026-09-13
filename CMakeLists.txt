@@ -60,6 +60,31 @@ qt_add_resources(llamabuilder_core "llamabuilder_data"
     FILES resources/params.json
 )
 
+# --- Monitoring : API Windows, délibérément hors de core/ ---------------------
+# core/ porte la promesse « rien d'autre que Qt6::Core » ; windows.h et psapi y
+# entreraient en contradiction. Cible distincte, frontière déjà tracée si le
+# monitoring devient un jour multiplateforme.
+qt_add_library(llamabuilder_monitor STATIC
+    src/monitor/MonitorSample.cpp
+    src/monitor/MonitorSample.h
+    src/monitor/MonitorWorker.cpp
+    src/monitor/MonitorWorker.h
+    src/monitor/NvmlLibrary.cpp
+    src/monitor/NvmlLibrary.h
+    src/monitor/NvmlMonitor.cpp
+    src/monitor/NvmlMonitor.h
+    src/monitor/SystemMonitor.cpp
+    src/monitor/SystemMonitor.h
+)
+
+target_link_libraries(llamabuilder_monitor PUBLIC Qt6::Core)
+target_include_directories(llamabuilder_monitor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if (WIN32)
+    # GetProcessMemoryInfo. nvml.dll n'est jamais liée : elle est chargée à
+    # l'exécution, sinon l'application refuserait de démarrer sans pilote NVIDIA.
+    target_link_libraries(llamabuilder_monitor PRIVATE psapi)
+endif()
+
 # --- Couche de présentation ---------------------------------------------------
 # Modèles et façade exposés au QML. Ces sources sont compilées dans la cible qui
 # porte le module QML : c'est ce qui permet à qmltyperegistrar de publier les
@@ -70,6 +95,8 @@ set(LLAMABUILDER_UI_SOURCES
     src/ui/AppController.h
     src/ui/Fonts.cpp
     src/ui/Fonts.h
+    src/ui/MonitorController.cpp
+    src/ui/MonitorController.h
     src/ui/ParamFilterModel.cpp
     src/ui/ParamFilterModel.h
     src/ui/ParamFormModel.cpp
@@ -83,7 +110,8 @@ list(TRANSFORM LLAMABUILDER_UI_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 
 # --- Application Qt Quick -----------------------------------------------------
 qt_add_executable(llamabuilder src/app/main.cpp ${LLAMABUILDER_UI_SOURCES})
-target_link_libraries(llamabuilder PRIVATE llamabuilder_core Qt6::Quick Qt6::QuickControls2)
+target_link_libraries(llamabuilder PRIVATE llamabuilder_core llamabuilder_monitor
+                      Qt6::Quick Qt6::QuickControls2)
 
 # qmltyperegistrar engendre des #include <AppController.h> sans le préfixe de
 # dossier : src/ui doit donc être atteignable directement. Notre propre code
@@ -115,7 +143,9 @@ qt_add_qml_module(llamabuilder
         qml/CommandBar.qml
         qml/ConfirmDialog.qml
         qml/FlatButton.qml
+        qml/Gauge.qml
         qml/InfoTip.qml
+        qml/MonitorCard.qml
         qml/NamePrompt.qml
         qml/ParamRow.qml
         qml/ParamSection.qml
@@ -138,7 +168,7 @@ add_custom_command(TARGET llamabuilder POST_BUILD
 
 # --- Harnais console (diagnostic du noyau) -----------------------------------
 qt_add_executable(llamabuilder-cli src/cli/main.cpp)
-target_link_libraries(llamabuilder-cli PRIVATE llamabuilder_core)
+target_link_libraries(llamabuilder-cli PRIVATE llamabuilder_core llamabuilder_monitor)
 set_target_properties(llamabuilder-cli PROPERTIES WIN32_EXECUTABLE OFF)
 
 add_custom_command(TARGET llamabuilder-cli POST_BUILD

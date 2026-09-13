@@ -8,7 +8,7 @@
 |---|---|---|
 | **1** | Noyau sans UI : `Profile`, `Settings`, `ProfileStore`, `ParamRegistry`, `CommandBuilder`, tests | **terminée** |
 | **2** | Coque Qt Quick : thème, liste de profils, formulaire dynamique, barre de commande, Réglages | **terminée** |
-| 3 | Monitoring : `NvmlMonitor`, `SystemMonitor`, jauges animées | à faire |
+| **3** | Monitoring : `NvmlMonitor`, `SystemMonitor`, jauges animées | **terminée** |
 | 4 | Exécution : `LlamaRunner`, panneau de logs, validation | à faire |
 | 5 | Finitions : recherche, duplication au clavier, géométrie, raccourcis | à faire |
 
@@ -16,8 +16,8 @@
 
 | Élément | Choix effectif |
 |---|---|
-| Compilateur | MSVC 14.51 (Visual Studio 18 Community) |
-| CMake / Ninja | 4.3.1 / 1.13.2, fournis par Visual Studio |
+| Compilateur | MSVC 14.44 (**Build Tools 2022**, sans IDE) |
+| CMake / Ninja | fournis par les Build Tools, découverts par `vswhere` |
 | Qt | **6.10.3 `msvc2022_64`**, installé dans `C:\Qt` via `aqtinstall` |
 | llama.cpp de référence | build **b10586** (`C:\dev\llama-cpp\llama-b10586-bin-win-cuda-13.3-x64`) |
 | GPU | RTX 5090 Laptop, 24 Go — `nvml.dll` présent dans `System32` |
@@ -52,6 +52,21 @@
 - **Pas de bouton « Enregistrer ».** Le §5.2 exige qu'une sélection charge
   instantanément et que « Lancer » soit aussitôt disponible : l'édition modifie le
   profil en place et l'anti-rebond de `ProfileStore` écrit pour elle.
+- **La VRAM par processus n'existe pas sous Windows WDDM.** Le §9 fait de
+  `nvmlDeviceGetComputeRunningProcesses_v3` le moyen d'afficher « llama utilise
+  15,2 Go ». Mesuré sur la RTX 5090 avec un `llama-server` chargé : NVML place
+  bien le PID dans la liste des clients de calcul, mais répond
+  `NVML_VALUE_NOT_AVAILABLE` pour sa consommation — `nvidia-smi` affiche `[N/A]`
+  au même endroit. C'est la limite de WDDM, le mode de toute GeForce pilotant un
+  écran. La jauge affiche donc « llama sur le GPU » sans chiffre, plutôt qu'un
+  « 0,0 Go » mensonger. `vramProcess` reste implémenté et testé : une carte en
+  mode TCC le renseignerait.
+- **Diviseur 1024³ avec l'étiquette « Go ».** Diviser par 10⁹ afficherait 25,6 Go
+  là où `nvidia-smi` rapporte 24 463 Mio, rendant le critère d'acceptation n°4
+  invérifiable.
+- **Une sous-commande `monitor` ajoutée au harnais console.** Le §9 ne la prévoit
+  pas, mais confronter nos chiffres à `nvidia-smi` demandait de pointer le
+  moniteur sur un PID avant que la phase 4 ne lance elle-même le processus.
 - **Deux fichiers ajoutés au noyau** par rapport au §3 : `JsonFile` (lecture et
   écriture atomiques, mise à l'écart des fichiers corrompus, mutualisée entre les
   deux dépôts) et `AppPaths` (résolution des emplacements).
@@ -137,6 +152,45 @@ Points d'architecture :
 - `pragma ComponentBehavior: Bound` dans tous les fichiers à délégués : les
   identifiants extérieurs y sont liés, jamais résolus dynamiquement.
 
+## Phase 3 — monitoring
+
+```
+src/monitor/  MonitorSample · NvmlLibrary · NvmlMonitor · SystemMonitor
+              MonitorWorker                     cible statique llamabuilder_monitor
+src/ui/       MonitorController                 exposé par App.monitor
+qml/          Gauge · MonitorCard
+src/cli/      sous-commande monitor [--pid N]
+tests/test_monitor.cpp                          22 cas
+```
+
+Points d'architecture :
+
+- **`llamabuilder_monitor` est une cible séparée**, la seule à toucher `windows.h`
+  et `psapi`. `core/` conserve sa promesse « rien d'autre que `Qt6::Core` », et la
+  frontière est déjà tracée si le monitoring devenait multiplateforme.
+- **NVML est déclarée, pas incluse.** `nvml.h` n'est distribué qu'avec le CUDA
+  Toolkit, absent des postes de développement comme des postes utilisateurs. Huit
+  signatures et trois structures sont déclarées dans `NvmlLibrary`, et trois
+  `static_assert` gèlent leurs tailles : une erreur d'ABI devient une erreur de
+  compilation au lieu d'une corruption de pile. Les suffixes `_v2`/`_v3` désignent
+  des ABI figées par NVIDIA, c'est ce qui rend la déclaration légitime.
+- **Le fil dédié n'est pas là pour le coût moyen d'un tick** — quelques centaines
+  de microsecondes — mais pour ses pires cas : `nvmlInit_v2` prend 100 à 300 ms, et
+  les appels NVML se sérialisent avec le pilote, donc bloquent au moment même où
+  l'on regarde la jauge : le chargement d'un modèle de 20 Go.
+- **Le `QTimer` est un enfant du worker, pas un membre par valeur.**
+  `moveToThread` n'emporte que les enfants ; un minuteur sans parent reste dans le
+  fil principal et ne tire jamais. Le défaut est invisible à l'œil nu parce que
+  `start()` émet un relevé immédiat — d'où le test `controllerSamplesPeriodically`,
+  qui compte les relevés au lieu d'en attendre un seul.
+- **Les seuils et le formatage vivent en C++**, pas en QML : `monitor::loadFor` et
+  `formatGigabytes` sont testés aux bornes exactes, et `Theme.gaugeColor` ne fait
+  que traduire un niveau en couleur.
+- **Communication par signaux typés** vers le worker plutôt que `invokeMethod`
+  avec un nom de méthode en chaîne : la connexion est vérifiée à la compilation.
+- `MonitorCard` déclare sa propriété comme `MonitorController` et non `var`, ce qui
+  place chaque lecture de propriété sous le contrôle de qmllint.
+
 ### Contrat à ne pas casser
 
 L'application définit `applicationName` mais **pas** `organizationName` :
@@ -146,13 +200,21 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
 
 ## Validation exécutée
 
-- **88 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
-  53 + 22 + 13.
+- **110 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
+  53 + 22 + 13 + 22.
 - Compilation **sans aucun avertissement** en `/W4 /permissive-`, en Debug comme
   en Release. Les en-têtes Qt sont traités comme externes ; `C4702`, émis depuis
   `qvariant.h` et `qjsengine.h` à la génération de code, est désactivé.
-- **`qmllint` sans aucun diagnostic** sur les 17 fichiers QML
+- **`qmllint` sans aucun diagnostic** sur les 19 fichiers QML
   (`cmake --build build/msvc --config Debug --target all_qmllint`).
+- **Jauges confrontées à `nvidia-smi`, un `llama-server` chargé** (Qwen3 27B Q5,
+  `-ngl 99 -c 2048`) : `llamabuilder-cli monitor --pid <PID>` rapporte
+  `18937 / 24463 Mio`, `nvidia-smi` rapporte `18938 / 24463 Mio` — **1 Mio
+  d'écart**, très en deçà des 200 Mo du critère d'acceptation n°4. La jauge passe
+  en ambre à 77 %, conformément au seuil de 75 % du §5.7.
+- Chemin « sans pilote NVIDIA » exercé sur une machine qui en possède un, en
+  passant un nom de bibliothèque inexistant : jauge RAM intacte, message affiché,
+  aucun plantage → critère d'acceptation n°6.
 - Application lancée : aucun avertissement QML à l'exécution, profil réel chargé,
   commande affichée identique à celle du harnais console, sections engendrées
   depuis `params.json`, badge « modifié » et compteurs par section corrects.
@@ -190,9 +252,16 @@ Les chemins de Visual Studio et de Qt sont découverts automatiquement
 Le script doit être appelé depuis une session où `scripts\dev-env.ps1` a été
 sourcé, sinon les DLL Qt manquent au lancement.
 
-## Prochaine étape — phase 3
+## Prochaine étape — import de ligne de commande, puis phase 4
 
-Monitoring : `NvmlMonitor` (chargement dynamique de `nvml.dll`, dégradation
-propre si absent), `SystemMonitor` pour la RAM, et les jauges animées du §5.1.
-L'emplacement est déjà réservé en haut du panneau central, et l'intervalle de
-rafraîchissement est déjà réglable dans la fenêtre Réglages.
+**Import (hors cahier des charges, demandé en cours de route).** Coller une ligne
+de commande et voir le formulaire se remplir. Un `CommandParser` dans `core/`,
+fonction pure symétrique de `CommandBuilder::build()`, dont l'index de flags se
+construit depuis `params.json` — donc aucun flag en dur. Ce qui n'est pas reconnu
+part dans `extraArgs` plutôt que d'être perdu. La propriété de test qui compte
+devient `parse(build(p)) == p`, et les 53 cas existants deviennent autant de
+générateurs d'entrées.
+
+**Phase 4.** `LlamaRunner`, panneau de logs, « Arrêter », ouverture du navigateur,
+bandeaux d'avertissement. `MonitorController::setTrackedPid()` est déjà en place
+et testé : il suffira de lui passer le PID du `QProcess`.

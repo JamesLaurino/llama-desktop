@@ -10,8 +10,8 @@ Comment compiler, lancer, tester et dépanner. Pour l'état d'avancement, voir
 
 | Élément | Attendu | Comment c'est trouvé |
 |---|---|---|
-| Visual Studio | 18 Community, composant **VC.Tools.x86.x64** | `vswhere -latest` |
-| CMake / Ninja | fournis par Visual Studio | `Common7\IDE\CommonExtensions\Microsoft\CMake\` |
+| Compilateur | **Build Tools 2022** (pas l'IDE), charge de travail `VCTools` + composant `VC.CMake.Project` | `vswhere -latest` |
+| CMake / Ninja | fournis par les Build Tools | `Common7\IDE\CommonExtensions\Microsoft\CMake\` |
 | Qt | **6.10.3 `msvc2022_64`** sous `C:\Qt` | glob `C:\Qt\6.*.*\msvc*_64`, version la plus récente |
 | llama.cpp | build **b10586** CUDA (référence) | déclaré dans les Réglages de l'application |
 
@@ -19,6 +19,18 @@ Rien n'est codé en dur, sauf `CMAKE_PREFIX_PATH` dans `CMakePresets.json`
 (`C:/Qt/6.10.3/msvc2022_64`) — à corriger si tu changes de version de Qt.
 
 Surcharges : `$env:VS_DIR`, `$env:QT_DIR` (doit contenir `bin\qmake.exe`).
+
+Le compilateur n'a **pas** besoin de Visual Studio : les Build Tools fournissent
+`cl.exe`, le SDK Windows, CMake et Ninja sans aucun IDE, et `vswhere` les liste
+comme n'importe quelle installation. Pour les (ré)installer :
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact `
+  --override "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.CMake.Project --includeRecommended"
+```
+
+Le composant `VC.CMake.Project` n'est pas facultatif : c'est lui qui pose
+`cmake.exe` et `ninja.exe` là où `dev-env.ps1` les cherche.
 
 ---
 
@@ -36,9 +48,9 @@ environnement, puis ajoute au `PATH` CMake, Ninja et `$QT_DIR\bin`.
 Il affiche ce qu'il a trouvé — vérifie ces cinq lignes en cas de doute :
 
 ```
-Visual Studio : C:\Program Files\Microsoft Visual Studio\18\Community
+Visual Studio : C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
 Qt            : C:\Qt\6.10.3\msvc2022_64
-cl            : ...\bin\Hostx64\x64\cl.exe
+cl            : ...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\cl.exe
 cmake         : ...\CMake\bin\cmake.exe
 ninja         : ...\Ninja\ninja.exe
 ```
@@ -51,7 +63,7 @@ sont pas sur le `PATH` et Windows n'affiche aucun message.
 ## 3. Compiler
 
 ```powershell
-.\scripts\build.ps1                      # Debug + les 88 tests
+.\scripts\build.ps1                      # Debug + les 110 tests
 .\scripts\build.ps1 -Config Release
 .\scripts\build.ps1 -NoTests             # compile seulement
 .\scripts\build.ps1 -Clean               # supprime build\msvc puis reconfigure
@@ -76,7 +88,7 @@ changer de configuration.
 ### Cibles utiles
 
 ```powershell
-cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 17 QML
+cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 19 QML
 cmake --build build\msvc --config Debug --target llamabuilder-cli
 ```
 
@@ -175,13 +187,27 @@ fenêtre Réglages.
 .\build\msvc\Debug\llamabuilder-cli.exe list             # profils enregistrés
 .\build\msvc\Debug\llamabuilder-cli.exe show "Mon Qwen"  # commande d'un profil (nom partiel ou id)
 .\build\msvc\Debug\llamabuilder-cli.exe demo             # profil d'exemple : espaces, enum, tristate
+.\build\msvc\Debug\llamabuilder-cli.exe monitor          # un relevé RAM / VRAM
+.\build\msvc\Debug\llamabuilder-cli.exe monitor --pid 14260   # + la part d'un processus
 ```
 
-Option : `--params-file <chemin>` pour tester un registre sans toucher à
-`%APPDATA%`.
+Options : `--params-file <chemin>` pour tester un registre sans toucher à
+`%APPDATA%` ; `--pid N` pour isoler un processus.
 
 Codes de sortie : `0` succès · `1` usage · `2` `params.json` inutilisable ·
 `3` profil introuvable.
+
+`monitor` imprime aussi les valeurs en **Mio**, unité de `nvidia-smi` : c'est ce
+qui rend le critère d'acceptation n°4 vérifiable d'un coup d'œil.
+
+```powershell
+nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader
+```
+
+Attention : sous Windows en mode WDDM — donc sur toute GeForce pilotant un écran
+— NVML refuse de chiffrer la VRAM **par processus**. `monitor --pid` affiche alors
+« non chiffrable (WDDM) », et `nvidia-smi --query-compute-apps` affiche `[N/A]` au
+même endroit. Ce n'est pas un défaut de l'application.
 
 `show` et `demo` impriment **les deux** formes produites en une passe par
 `CommandBuilder::build()` — la ligne citée collable dans `cmd.exe`, puis les
@@ -193,7 +219,7 @@ dans le noyau, pas dans l'affichage.
 ## 7. Tests
 
 ```powershell
-ctest --preset debug                     # les 3 binaires, 88 cas
+ctest --preset debug                     # les 4 binaires, 110 cas
 ctest --preset debug -R uimodels         # un seul binaire
 ctest --preset debug -V                  # sortie complète
 ```
@@ -203,6 +229,7 @@ ctest --preset debug -V                  # sortie complète
 | `test_commandbuilder` | 53 | citation Windows, ordre des arguments, tous les types de paramètres |
 | `test_store` | 22 | E/S atomiques, anti-rebond, fichiers corrompus, aller-retour JSON |
 | `test_uimodels` | 13 | rôles des modèles, filtrage par section et par binaire, CRUD, validation |
+| `test_monitor` | 22 | seuils aux bornes, diviseur 1024³, NVML absente, sentinelle WDDM, fil dédié |
 
 Exécution directe, avec les options de QTest :
 
@@ -231,6 +258,11 @@ registre est donc couverte immédiatement.
    unique — valeur vide = paramètre non posé.
 6. Ferme, relance : tout est rechargé. Il n'y a pas de bouton *Enregistrer*,
    l'anti-rebond de 500 ms écrit pour toi.
+7. **Jauges** : colle la commande dans un `cmd.exe`, laisse le modèle se charger,
+   et regarde la barre VRAM monter puis virer à l'ambre au-delà de 75 %. Compare
+   avec `nvidia-smi`. Minimise la fenêtre : le sondage s'arrête ; restaure-la, un
+   relevé arrive immédiatement.
+8. Change l'**intervalle** dans les Réglages : pris en compte sans redémarrage.
 
 ---
 
@@ -258,12 +290,14 @@ scripts/       dev-env.ps1 (environnement) · build.ps1 (compile + tests)
 resources/     params.json (47 paramètres, 7 sections) · fonts/ (Inter, JetBrains Mono, OFL)
 src/core/      noyau sans UI, Qt6::Core seul — AppPaths CommandBuilder JsonFile
                ParamRegistry Profile ProfileStore Settings SettingsStore
+src/monitor/   seule cible touchant windows.h et psapi — MonitorSample NvmlLibrary
+               NvmlMonitor SystemMonitor MonitorWorker
 src/ui/        AppController (façade unique) · ParamFormModel · ParamFilterModel
-               ProfileListModel · Fonts
+               ProfileListModel · MonitorController · Fonts
 src/app/       main.cpp — QGuiApplication + QQmlApplicationEngine
 src/cli/       main.cpp — harnais console
-qml/           17 fichiers, Theme.qml en singleton
-tests/         test_commandbuilder · test_store · test_uimodels
+qml/           19 fichiers, Theme.qml en singleton
+tests/         test_commandbuilder · test_store · test_uimodels · test_monitor
 mardown/       cahier des charges
 build/msvc/    Debug\ et Release\ (ignoré par git)
 ```

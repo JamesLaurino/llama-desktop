@@ -4,7 +4,8 @@
 #include "core/Profile.h"
 #include "core/ProfileStore.h"
 #include "core/SettingsStore.h"
-// Les deux modèles sont exposés comme propriétés : moc exige des types complets.
+// Modèles et moniteur sont exposés comme propriétés : moc exige des types complets.
+#include "ui/MonitorController.h"
 #include "ui/ParamFormModel.h"
 #include "ui/ProfileListModel.h"
 
@@ -35,6 +36,7 @@ class AppController : public QObject
     Q_PROPERTY(ui::ParamFormModel* params READ params CONSTANT)
     Q_PROPERTY(QVariantList sections READ sections CONSTANT)
     Q_PROPERTY(QVariantMap sectionSetCounts READ sectionSetCounts NOTIFY paramsRevisionChanged)
+    Q_PROPERTY(ui::MonitorController* monitor READ monitor CONSTANT)
 
     Q_PROPERTY(QString currentProfileId READ currentProfileId NOTIFY currentProfileChanged)
     Q_PROPERTY(bool hasProfile READ hasProfile NOTIFY currentProfileChanged)
@@ -71,6 +73,7 @@ public:
 
     ProfileListModel* profiles() const { return m_profiles; }
     ParamFormModel* params() const { return m_form; }
+    MonitorController* monitor() const { return m_monitor; }
     QVariantList sections() const;
     /// Nombre de paramètres posés par section : alimente le compteur et
     /// l'activation du bouton « Réinitialiser » de chaque section.
@@ -153,6 +156,7 @@ private:
 
     ProfileListModel* m_profiles = nullptr;
     ParamFormModel* m_form = nullptr;
+    MonitorController* m_monitor = nullptr;
 
     core::Profile m_current;
     bool m_hasCurrent = false;

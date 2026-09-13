@@ -1,9 +1,10 @@
-// Harnais console de la phase 1 : valide le noyau sans aucune UI.
+// Harnais console : valide le noyau et le monitoring sans aucune UI.
 //
 //   llamabuilder-cli params                 vérifie params.json et le résume
 //   llamabuilder-cli list                   liste les profils enregistrés
 //   llamabuilder-cli show <nom|id>          imprime la commande d'un profil
 //   llamabuilder-cli demo                   imprime la commande d'un profil d'exemple
+//   llamabuilder-cli monitor [--pid N]      un relevé RAM / VRAM, comparable à nvidia-smi
 
 #include "core/AppPaths.h"
 #include "core/CommandBuilder.h"
@@ -12,6 +13,9 @@
 #include "core/ProfileStore.h"
 #include "core/Settings.h"
 #include "core/SettingsStore.h"
+#include "monitor/MonitorSample.h"
+#include "monitor/NvmlMonitor.h"
+#include "monitor/SystemMonitor.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -129,6 +133,44 @@ Profile demoProfile()
     return profile;
 }
 
+/// Un relevé unique, en Mio comme nvidia-smi, pour confronter nos chiffres aux
+/// siens (critère d'acceptation n°4 : moins de 200 Mo d'écart).
+int printMonitorSample(quint32 trackedPid)
+{
+    monitor::NvmlMonitor nvml;
+    nvml.initialise();
+
+    monitor::MonitorSample sample;
+    monitor::SystemMonitor::sample(sample, trackedPid);
+    nvml.sample(sample, trackedPid);
+
+    const auto mib = [](quint64 bytes) { return bytes / (1024 * 1024); };
+
+    out() << "RAM    " << monitor::formatPair(sample.ramUsed, sample.ramTotal, QLocale::c())
+          << "   (" << mib(sample.ramUsed) << " / " << mib(sample.ramTotal) << " Mio)\n";
+    if (sample.gpuAvailable) {
+        out() << "VRAM   " << monitor::formatPair(sample.vramUsed, sample.vramTotal, QLocale::c())
+              << "   (" << mib(sample.vramUsed) << " / " << mib(sample.vramTotal) << " Mio)\n"
+              << "GPU    " << sample.gpuName;
+        if (sample.gpuUtilisation >= 0)
+            out() << "   utilisation " << sample.gpuUtilisation << " %";
+        out() << "\n";
+    } else {
+        out() << "VRAM   " << sample.gpuError << "\n";
+    }
+    if (trackedPid != 0) {
+        out() << "PID " << trackedPid << "   RAM " << mib(sample.ramProcess) << " Mio   VRAM ";
+        if (sample.vramProcess > 0)
+            out() << mib(sample.vramProcess) << " Mio\n";
+        else if (sample.trackedOnGpu)
+            out() << "non chiffrable (WDDM) — le processus est bien sur le GPU\n";
+        else
+            out() << "aucune — le PID n'est pas un client de calcul du GPU\n";
+    }
+    out() << Qt::flush;
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -141,11 +183,11 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     parser.setApplicationDescription(
         QStringLiteral("Harnais de validation du noyau LlamaBuilder.\n\n"
-                       "Commandes : params | list | show <nom|id> | demo"));
+                       "Commandes : params | list | show <nom|id> | demo | monitor"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("commande"),
-                                 QStringLiteral("params, list, show ou demo"));
+                                 QStringLiteral("params, list, show, demo ou monitor"));
     parser.addPositionalArgument(QStringLiteral("cible"),
                                  QStringLiteral("nom ou identifiant de profil (pour show)"));
 
@@ -154,6 +196,12 @@ int main(int argc, char* argv[])
         QStringLiteral("Utilise ce params.json au lieu de celui résolu automatiquement."),
         QStringLiteral("chemin"));
     parser.addOption(paramsFileOption);
+
+    const QCommandLineOption pidOption(
+        QStringLiteral("pid"),
+        QStringLiteral("Isole la RAM et la VRAM de ce processus (pour monitor)."),
+        QStringLiteral("N"));
+    parser.addOption(pidOption);
     parser.process(app);
 
     const QStringList positional = parser.positionalArguments();
@@ -162,6 +210,10 @@ int main(int argc, char* argv[])
         parser.showHelp(1);
         return 1;
     }
+
+    // Avant le registre : un relevé RAM / VRAM ne dépend pas de params.json.
+    if (command == QLatin1String("monitor"))
+        return printMonitorSample(parser.value(pidOption).toUInt());
 
     const QString paramsPath = parser.isSet(paramsFileOption) ? parser.value(paramsFileOption)
                                                               : AppPaths::resolveParamsFile();
@@ -221,7 +273,8 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    err() << "Commande inconnue : « " << command << " ». Attendu : params, list, show ou demo.\n"
+    err() << "Commande inconnue : « " << command
+          << " ». Attendu : params, list, show, demo ou monitor.\n"
           << Qt::flush;
     return 1;
 }

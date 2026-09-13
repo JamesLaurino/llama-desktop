@@ -68,6 +68,8 @@ void AppController::initialise(const QString& paramsPath)
 
     m_profiles = new ProfileListModel(&m_profileStore, this);
     m_form = new ParamFormModel(&m_registry, this);
+    m_monitor = new MonitorController(this);
+    m_monitor->setIntervalMs(m_settingsStore.settings().monitorIntervalMs);
 
     connect(m_form, &ParamFormModel::valuesChanged, this, [this] {
         m_current.params = m_form->values();
@@ -76,6 +78,9 @@ void AppController::initialise(const QString& paramsPath)
         emit paramsRevisionChanged();
     });
     connect(&m_settingsStore, &core::SettingsStore::settingsChanged, this, [this] {
+        // L'intervalle des jauges suit les Réglages sans redémarrage, comme les
+        // chemins d'exécutables (critère d'acceptation n°5).
+        m_monitor->setIntervalMs(m_settingsStore.settings().monitorIntervalMs);
         emit settingsChanged();
         recompute();
     });

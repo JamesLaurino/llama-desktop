@@ -46,4 +46,16 @@ QtObject {
     readonly property int labelWidth: 230
     readonly property int tooltipDelay: 300
     readonly property int tooltipMaxWidth: 360
+
+    readonly property int gaugeHeight: 8
+
+    // Les seuils du §5.7 sont calculés en C++ (monitor::loadFor) pour être
+    // testables ; ici on ne fait que traduire le niveau en couleur.
+    function gaugeColor(level) {
+        if (level === 2)
+            return danger
+        if (level === 1)
+            return warn
+        return ok
+    }
 }

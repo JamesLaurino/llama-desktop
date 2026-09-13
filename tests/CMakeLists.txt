@@ -18,4 +18,9 @@ llamabuilder_add_test(test_store SOURCES test_store.cpp)
 # de l'application, qui porte le module QML. Aucune bibliothèque à partager.
 llamabuilder_add_test(test_uimodels
     SOURCES test_uimodels.cpp ${LLAMABUILDER_UI_SOURCES}
-    LIBS Qt6::Gui Qt6::Qml)
+    LIBS llamabuilder_monitor Qt6::Gui Qt6::Qml)
+
+llamabuilder_add_test(test_monitor
+    SOURCES test_monitor.cpp ${CMAKE_SOURCE_DIR}/src/ui/MonitorController.cpp
+            ${CMAKE_SOURCE_DIR}/src/ui/MonitorController.h
+    LIBS llamabuilder_monitor Qt6::Qml)
