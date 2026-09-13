@@ -175,12 +175,46 @@ ParamRegistry ParamRegistry::fromJson(const QByteArray& json, QString* error)
         param.values = toStringList(object.value(QStringLiteral("values")));
         param.keywords = toStringList(object.value(QStringLiteral("keywords")));
         param.appliesTo = toStringList(object.value(QStringLiteral("appliesTo")));
+        param.aliases = toStringList(object.value(QStringLiteral("aliases")));
+        param.aliasesOff = toStringList(object.value(QStringLiteral("aliasesOff")));
 
         if (param.type == ParamType::Enum && param.values.isEmpty())
             return fail(QStringLiteral("Paramètre « %1 » : un « enum » exige « values ».")
                             .arg(param.key));
+        if (!param.aliasesOff.isEmpty() && param.flagOff.isEmpty())
+            return fail(QStringLiteral("Paramètre « %1 » : « aliasesOff » sans « flagOff ».")
+                            .arg(param.key));
 
-        registry.m_paramIndex.insert(param.key, registry.m_params.size());
+        const int index = registry.m_params.size();
+        // Un drapeau qui désignerait deux paramètres ferait importer le mauvais,
+        // sans bruit. Mieux vaut refuser le fichier.
+        const auto claim = [&](const QString& flag, bool negated) -> QString {
+            if (flag.isEmpty())
+                return {};
+            const auto existing = registry.m_flagIndex.constFind(flag);
+            if (existing != registry.m_flagIndex.constEnd()) {
+                return QStringLiteral("Drapeau « %1 » revendiqué par « %2 » et « %3 ».")
+                    .arg(flag, registry.m_params.at(*existing >> 1).key, param.key);
+            }
+            registry.m_flagIndex.insert(flag, (index << 1) | (negated ? 1 : 0));
+            return {};
+        };
+
+        QString clash = claim(param.flag, false);
+        for (const QString& alias : param.aliases) {
+            if (clash.isEmpty())
+                clash = claim(alias, false);
+        }
+        if (clash.isEmpty())
+            clash = claim(param.flagOff, true);
+        for (const QString& alias : param.aliasesOff) {
+            if (clash.isEmpty())
+                clash = claim(alias, true);
+        }
+        if (!clash.isEmpty())
+            return fail(clash);
+
+        registry.m_paramIndex.insert(param.key, index);
         registry.m_params.append(param);
     }
 
@@ -204,6 +238,14 @@ const ParamDef* ParamRegistry::find(const QString& key) const
 {
     const auto it = m_paramIndex.constFind(key);
     return it == m_paramIndex.constEnd() ? nullptr : &m_params.at(*it);
+}
+
+std::optional<ParamRegistry::FlagMatch> ParamRegistry::findByFlag(QStringView flag) const
+{
+    const auto it = m_flagIndex.constFind(flag.toString());
+    if (it == m_flagIndex.constEnd())
+        return std::nullopt;
+    return FlagMatch{ &m_params.at(*it >> 1), (*it & 1) != 0 };
 }
 
 const SectionDef* ParamRegistry::findSection(const QString& id) const

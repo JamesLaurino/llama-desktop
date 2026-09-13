@@ -2,6 +2,7 @@
 
 #include "core/AppPaths.h"
 #include "core/CommandBuilder.h"
+#include "core/CommandParser.h"
 #include "ui/Fonts.h"
 #include "ui/ParamFormModel.h"
 #include "ui/ProfileListModel.h"
@@ -333,6 +334,85 @@ QString AppController::monoFontFamily() const
 QString AppController::dataDir() const
 {
     return QDir::toNativeSeparators(core::AppPaths::dataDir());
+}
+
+QVariantMap AppController::analyseCommand(const QString& text) const
+{
+    const core::ParsedCommand parsed = core::CommandParser::parse(text, m_registry);
+
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), parsed.isValid());
+    result.insert(QStringLiteral("error"), parsed.error);
+    result.insert(QStringLiteral("empty"), parsed.isEmpty());
+    result.insert(QStringLiteral("executable"), parsed.executablePath);
+    result.insert(QStringLiteral("modelPath"), parsed.modelPath);
+    result.insert(QStringLiteral("extraArgs"), parsed.extraArgs);
+    result.insert(QStringLiteral("notes"), parsed.notes);
+    result.insert(QStringLiteral("binary"),
+                  parsed.binaryDetected ? core::binaryKindToString(parsed.binary) : QString());
+
+    QVariantList entries;
+    entries.reserve(parsed.entries.size());
+    for (const core::ParsedEntry& entry : parsed.entries) {
+        entries.append(QVariantMap{
+            { QStringLiteral("label"), entry.label },
+            { QStringLiteral("flag"), entry.flag },
+            { QStringLiteral("value"), entry.value },
+            { QStringLiteral("applies"), entry.appliesToBinary },
+        });
+    }
+    result.insert(QStringLiteral("entries"), entries);
+
+    // La commande que l'application produira, pour la comparer à celle collée :
+    // c'est la seule façon de voir d'un coup d'œil ce que l'import normalise.
+    core::Profile preview = m_hasCurrent ? m_current : core::Profile::createNew();
+    core::CommandParser::applyTo(parsed, preview);
+    result.insert(
+        QStringLiteral("preview"),
+        core::CommandBuilder::build(preview, m_settingsStore.settings(), m_registry).displayLine);
+
+    return result;
+}
+
+bool AppController::importCommandIntoCurrent(const QString& text)
+{
+    if (!m_hasCurrent)
+        return false;
+    const core::ParsedCommand parsed = core::CommandParser::parse(text, m_registry);
+    if (!parsed.isValid())
+        return false;
+
+    core::CommandParser::applyTo(parsed, m_current);
+    // Le formulaire est reconstruit depuis la nouvelle table : les paramètres
+    // absents de la ligne collée doivent disparaître, pas subsister de l'état
+    // précédent.
+    m_form->setSource(m_current.binary, m_current.params);
+    persistCurrent();
+    m_profiles->notifyChanged(m_current.id);
+
+    emit modelPathChanged();
+    emit binaryChanged();
+    emit extraArgsChanged();
+    emit paramsRevisionChanged();
+    recompute();
+    return true;
+}
+
+QString AppController::importCommandAsNewProfile(const QString& text, const QString& name)
+{
+    const core::ParsedCommand parsed = core::CommandParser::parse(text, m_registry);
+    if (!parsed.isValid())
+        return {};
+
+    core::Profile profile = core::Profile::createNew();
+    profile.name = name.trimmed().isEmpty() ? QStringLiteral("Commande importée") : name.trimmed();
+    core::CommandParser::applyTo(parsed, profile);
+
+    m_profileStore.upsert(profile);
+    m_profileStore.sortByRecentUse();
+    m_profiles->refresh();
+    selectProfile(profile.id);
+    return profile.id;
 }
 
 void AppController::persistCurrent()

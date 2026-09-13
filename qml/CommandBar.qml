@@ -33,6 +33,10 @@ Rectangle {
         interval: 1500
     }
 
+    ImportDialog {
+        id: importDialog
+    }
+
     ColumnLayout {
         id: layout
         anchors.fill: parent
@@ -93,6 +97,14 @@ Rectangle {
                         App.copyCommand()
                         copiedFeedback.restart()
                     }
+                }
+
+                // Chemin inverse, au même endroit que « Copier » : la symétrie
+                // des deux sens se lit dans la disposition.
+                FlatButton {
+                    Layout.preferredWidth: 120
+                    text: qsTr("Importer")
+                    onClicked: importDialog.openWith("")
                 }
 
                 RowLayout {

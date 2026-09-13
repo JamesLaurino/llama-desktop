@@ -9,6 +9,7 @@
 | **1** | Noyau sans UI : `Profile`, `Settings`, `ProfileStore`, `ParamRegistry`, `CommandBuilder`, tests | **terminée** |
 | **2** | Coque Qt Quick : thème, liste de profils, formulaire dynamique, barre de commande, Réglages | **terminée** |
 | **3** | Monitoring : `NvmlMonitor`, `SystemMonitor`, jauges animées | **terminée** |
+| **3bis** | Import : `CommandParser`, alias dans `params.json`, dialogue « Importer » | **terminée** |
 | 4 | Exécution : `LlamaRunner`, panneau de logs, validation | à faire |
 | 5 | Finitions : recherche, duplication au clavier, géométrie, raccourcis | à faire |
 
@@ -191,6 +192,68 @@ Points d'architecture :
 - `MonitorCard` déclare sa propriété comme `MonitorController` et non `var`, ce qui
   place chaque lecture de propriété sous le contrôle de qmllint.
 
+## Phase 3bis — import de ligne de commande
+
+Fonctionnalité **hors cahier des charges**, demandée en cours de route : coller une
+commande et retrouver le profil correspondant.
+
+```
+src/core/     CommandParser                     fonction pure, miroir de CommandBuilder
+resources/    params.json : champs aliases / aliasesOff sur 27 paramètres
+src/ui/       AppController::analyseCommand / importCommandIntoCurrent
+                                                 / importCommandAsNewProfile
+qml/          ImportDialog                      bouton « Importer » dans CommandBar
+src/cli/      sous-commande parse "<ligne>"
+tests/test_commandparser.cpp                    55 cas
+tests/test_uimodels.cpp                         4 cas d'import supplémentaires
+```
+
+Points d'architecture :
+
+- **Les alias vivent dans `params.json`, pas dans le C++.** `params.json` ne
+  déclarait que les formes courtes (`-c`, `-ngl`, `-fa`) ; une ligne copiée d'un
+  README utilise presque toujours les formes longues. Les 27 alias manquants ont
+  été relevés dans le `--help` du binaire b10586, pas devinés. Coder cette table
+  en C++ aurait cassé le contrat « ajouter un paramètre ne demande aucune
+  recompilation ».
+- **Un drapeau ne peut désigner qu'un seul paramètre.** `ParamRegistry` refuse le
+  fichier si deux entrées revendiquent la même écriture : un alias recouvrant le
+  drapeau d'un autre paramètre ferait importer le mauvais réglage, sans bruit.
+- **Deux pièges du `--help` évités.** `-kvo/--kv-offload` est listé sur la même
+  ligne que `-nkvo/--no-kv-offload` alors qu'il en est l'inverse ; `--warmup` de
+  même face à `--no-warmup`. Les prendre pour des alias aurait inversé le réglage
+  en silence. Un test interdit leur reconnaissance.
+- **Le parseur ne redécoupe rien.** Il consomme `CommandBuilder::splitArgumentLine`,
+  déjà écrit et déjà testé pour les règles `CommandLineToArgvW`.
+- **La propriété d'aller-retour est le test central** : `build(parse(build(p)))`
+  doit être identique au caractère à `build(p)`, vérifié sur les huit types de
+  paramètres. C'est elle qui a révélé que les chemins revenaient en antislashs.
+- **Ce qui n'est pas reconnu est conservé, jamais perdu** : drapeau inconnu de ce
+  build, jeton orphelin, drapeau sans valeur — tout part en arguments libres avec
+  une note affichée dans l'aperçu.
+- **Un refus est total.** Une ligne enchaînant plusieurs commandes (`&&`, `|`, `>`,
+  `2>&1`) n'est pas tronquée pour en garder la première moitié : elle est rejetée,
+  et rien n'est écrit.
+
+### Écarts assumés propres à l'import
+
+- **Écritures acceptées en lecture, jamais émises** : formes longues,
+  `--option=valeur`, continuations de ligne des trois shells (`\`, `` ` ``, `^`),
+  opérateur d'appel PowerShell `&`. L'application, elle, continue de n'écrire
+  qu'une seule forme.
+- **`-fa` seul vaut `on`.** Le paramètre est un enum dans ce build, mais c'était un
+  booléen avant, et c'est encore l'écriture la plus répandue en ligne. Une note le
+  signale.
+- **Les chemins sont ramenés en séparateurs `/` à l'import**, comme ceux que rend
+  le sélecteur de fichiers. `CommandBuilder` n'écrit des antislashs que dans la
+  ligne affichée ; sans cette normalisation, le même chemin s'écrirait de deux
+  façons selon son origine.
+- **Un paramètre reconnu mais hors binaire est conservé** dans le profil, signalé
+  dans l'aperçu, et non émis par la génération. Refuser l'import ou le déplacer en
+  arguments libres perdrait l'intention de l'utilisateur.
+- **L'import remplace, il ne fusionne pas.** Les paramètres absents de la ligne
+  collée disparaissent du profil ; le nom, les notes et l'identifiant survivent.
+
 ### Contrat à ne pas casser
 
 L'application définit `applicationName` mais **pas** `organizationName` :
@@ -200,12 +263,12 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
 
 ## Validation exécutée
 
-- **110 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
-  53 + 22 + 13 + 22.
+- **169 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
+  53 + 55 + 22 + 17 + 22.
 - Compilation **sans aucun avertissement** en `/W4 /permissive-`, en Debug comme
   en Release. Les en-têtes Qt sont traités comme externes ; `C4702`, émis depuis
   `qvariant.h` et `qjsengine.h` à la génération de code, est désactivé.
-- **`qmllint` sans aucun diagnostic** sur les 19 fichiers QML
+- **`qmllint` sans aucun diagnostic** sur les 20 fichiers QML
   (`cmake --build build/msvc --config Debug --target all_qmllint`).
 - **Jauges confrontées à `nvidia-smi`, un `llama-server` chargé** (Qwen3 27B Q5,
   `-ngl 99 -c 2048`) : `llamabuilder-cli monitor --pid <PID>` rapporte
@@ -224,6 +287,13 @@ données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
   `model loaded` et `listening on http://127.0.0.1:8099`. Aucun flag rejeté.
   → critère d'acceptation n°2 tenu.
 - Repli sur la ressource embarquée vérifié en retirant le `params.json` voisin.
+- **Import exercé de bout en bout dans l'interface** sur une ligne écrite comme on
+  les trouve en ligne — formes longues, `--ctx-size=16384`, `-fa` sans valeur,
+  chemin cité contenant des espaces, `--mlock` inconnu du registre. Les
+  8 paramètres attendus sont reconnus, le chemin cité survit, le nom du profil est
+  déduit du fichier de modèle, et le profil écrit dans `%APPDATA%` contient
+  exactement les 8 clés avec `--mlock` en arguments libres. Le profil de test a
+  ensuite été retiré du dépôt de profils.
 
 ### Artefacts de test créés hors du dépôt (supprimables)
 
@@ -252,16 +322,13 @@ Les chemins de Visual Studio et de Qt sont découverts automatiquement
 Le script doit être appelé depuis une session où `scripts\dev-env.ps1` a été
 sourcé, sinon les DLL Qt manquent au lancement.
 
-## Prochaine étape — import de ligne de commande, puis phase 4
+## Prochaine étape — phase 4
 
-**Import (hors cahier des charges, demandé en cours de route).** Coller une ligne
-de commande et voir le formulaire se remplir. Un `CommandParser` dans `core/`,
-fonction pure symétrique de `CommandBuilder::build()`, dont l'index de flags se
-construit depuis `params.json` — donc aucun flag en dur. Ce qui n'est pas reconnu
-part dans `extraArgs` plutôt que d'être perdu. La propriété de test qui compte
-devient `parse(build(p)) == p`, et les 53 cas existants deviennent autant de
-générateurs d'entrées.
+`LlamaRunner`, panneau de logs, « Arrêter », ouverture du navigateur, bandeaux
+d'avertissement. `MonitorController::setTrackedPid()` est déjà en place et testé :
+il suffira de lui passer le PID du `QProcess`. Le parcours « coller une commande
+trouvée en ligne, puis la lancer » sera alors complet.
 
-**Phase 4.** `LlamaRunner`, panneau de logs, « Arrêter », ouverture du navigateur,
-bandeaux d'avertissement. `MonitorController::setTrackedPid()` est déjà en place
-et testé : il suffira de lui passer le PID du `QProcess`.
+Deux arbitrages de la phase 1 restent ouverts, décrits plus haut : la section
+« Échantillonnage » visible pour `llama-server` contre le §5.3, et `-lm` en
+remplacement de `--mlock` / `--no-mmap`.

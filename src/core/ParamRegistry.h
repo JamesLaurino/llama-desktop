@@ -47,6 +47,12 @@ struct ParamDef {
     QStringList values;   ///< Enum
     QStringList keywords; ///< IntOrKeyword
     QStringList appliesTo;
+    /// Écritures alternatives acceptées **en lecture seule** (import d'une ligne
+    /// de commande). La génération n'émet jamais qu'un `flag` ou un `flagOff` :
+    /// une ligne copiée depuis un README utilise les formes longues, que ce
+    /// build accepte tout autant.
+    QStringList aliases;
+    QStringList aliasesOff; ///< idem, pour la forme négative d'un Tristate
 
     bool appliesToBinary(BinaryKind kind) const;
     /// Vrai si le type n'attend pas de valeur sur la ligne de commande.
@@ -74,6 +80,18 @@ public:
     const ParamDef* find(const QString& key) const;
     const SectionDef* findSection(const QString& id) const;
 
+    /// Paramètre désigné par un drapeau tel qu'il apparaît sur une ligne de
+    /// commande, et sens dans lequel il a été écrit.
+    struct FlagMatch {
+        const ParamDef* param = nullptr;
+        /// Le drapeau rencontré est la forme négative (`flagOff` ou l'un de ses
+        /// alias) : `--no-jinja` désigne le même paramètre que `--jinja`, avec
+        /// la valeur inverse.
+        bool negated = false;
+    };
+    /// Recherche par drapeau, formes courtes, longues et alias confondus.
+    std::optional<FlagMatch> findByFlag(QStringView flag) const;
+
     bool isEmpty() const { return m_params.isEmpty(); }
     QString targetBuild() const { return m_targetBuild; }
 
@@ -82,6 +100,10 @@ private:
     QVector<ParamDef> m_params;
     QHash<QString, int> m_paramIndex;
     QHash<QString, int> m_sectionIndex;
+    /// Drapeau → `indice << 1 | négation`. Un indice, pas un pointeur : le
+    /// vecteur de paramètres est encore en cours de remplissage quand l'index
+    /// se construit.
+    QHash<QString, int> m_flagIndex;
     QString m_targetBuild;
 };
 

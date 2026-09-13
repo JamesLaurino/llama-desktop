@@ -36,6 +36,8 @@ qt_add_library(llamabuilder_core STATIC
     src/core/AppPaths.h
     src/core/CommandBuilder.cpp
     src/core/CommandBuilder.h
+    src/core/CommandParser.cpp
+    src/core/CommandParser.h
     src/core/JsonFile.cpp
     src/core/JsonFile.h
     src/core/ParamRegistry.cpp
@@ -144,6 +146,7 @@ qt_add_qml_module(llamabuilder
         qml/ConfirmDialog.qml
         qml/FlatButton.qml
         qml/Gauge.qml
+        qml/ImportDialog.qml
         qml/InfoTip.qml
         qml/MonitorCard.qml
         qml/NamePrompt.qml

@@ -121,6 +121,16 @@ public:
     Q_INVOKABLE void copyCommand();
     Q_INVOKABLE void revealModelFile(const QString& id);
 
+    /// Analyse une ligne collée sans rien modifier : alimente l'aperçu du
+    /// dialogue d'import. Rien n'est écrit avant que l'utilisateur ne tranche.
+    Q_INVOKABLE QVariantMap analyseCommand(const QString& text) const;
+    /// Écrase modèle, paramètres et arguments libres du profil courant.
+    /// Le nom, les notes et l'identifiant sont conservés.
+    Q_INVOKABLE bool importCommandIntoCurrent(const QString& text);
+    /// Crée un profil depuis une ligne collée et le sélectionne.
+    /// Renvoie son identifiant, ou une chaîne vide si la ligne est inexploitable.
+    Q_INVOKABLE QString importCommandAsNewProfile(const QString& text, const QString& name);
+
     Q_INVOKABLE void applySettings(const QString& serverPath, const QString& cliPath,
                                   const QString& modelsDir, int intervalMs, const QString& theme);
 

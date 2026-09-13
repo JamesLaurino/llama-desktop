@@ -5,9 +5,11 @@
 //   llamabuilder-cli show <nom|id>          imprime la commande d'un profil
 //   llamabuilder-cli demo                   imprime la commande d'un profil d'exemple
 //   llamabuilder-cli monitor [--pid N]      un relevé RAM / VRAM, comparable à nvidia-smi
+//   llamabuilder-cli parse "<ligne>"        relit une ligne de commande et la régénère
 
 #include "core/AppPaths.h"
 #include "core/CommandBuilder.h"
+#include "core/CommandParser.h"
 #include "core/ParamRegistry.h"
 #include "core/Profile.h"
 #include "core/ProfileStore.h"
@@ -171,6 +173,47 @@ int printMonitorSample(quint32 trackedPid)
     return 0;
 }
 
+/// Analyse une ligne collée et montre ce que l'import en ferait. Pendant exact
+/// de `show` : l'un génère, l'autre relit.
+int printParsedCommand(const QString& line, const Settings& settings,
+                       const ParamRegistry& registry)
+{
+    const ParsedCommand parsed = CommandParser::parse(line, registry);
+    if (!parsed.isValid()) {
+        err() << parsed.error << "\n" << Qt::flush;
+        return 4;
+    }
+
+    out() << "binaire   : "
+          << (parsed.binaryDetected ? binaryKindToString(parsed.binary)
+                                    : QStringLiteral("(non déduit)"))
+          << "\n"
+          << "exécutable: "
+          << (parsed.executablePath.isEmpty() ? QStringLiteral("(absent)") : parsed.executablePath)
+          << "\n"
+          << "modèle    : "
+          << (parsed.modelPath.isEmpty() ? QStringLiteral("(absent)") : parsed.modelPath) << "\n\n"
+          << parsed.entries.size() << " paramètre(s) reconnu(s)\n";
+    for (const ParsedEntry& entry : parsed.entries) {
+        out() << "  " << entry.flag.leftJustified(18) << entry.value.leftJustified(24)
+              << entry.label << (entry.appliesToBinary ? "" : "   [hors binaire]") << "\n";
+    }
+    if (!parsed.extraArgs.isEmpty())
+        out() << "\narguments libres : " << parsed.extraArgs << "\n";
+    if (!parsed.notes.isEmpty()) {
+        out() << "\n" << parsed.notes.size() << " avertissement(s)\n";
+        for (const QString& note : parsed.notes)
+            out() << "  ! " << note << "\n";
+    }
+
+    Profile profile = Profile::createNew();
+    CommandParser::applyTo(parsed, profile);
+    out() << "\n--- commande régénérée ---\n"
+          << CommandBuilder::build(profile, settings, registry).displayLine << "\n"
+          << Qt::flush;
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -183,11 +226,11 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     parser.setApplicationDescription(
         QStringLiteral("Harnais de validation du noyau LlamaBuilder.\n\n"
-                       "Commandes : params | list | show <nom|id> | demo | monitor"));
+                       "Commandes : params | list | show <nom|id> | demo | monitor | parse"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("commande"),
-                                 QStringLiteral("params, list, show, demo ou monitor"));
+                                 QStringLiteral("params, list, show, demo, monitor ou parse"));
     parser.addPositionalArgument(QStringLiteral("cible"),
                                  QStringLiteral("nom ou identifiant de profil (pour show)"));
 
@@ -236,6 +279,19 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+    if (command == QLatin1String("parse")) {
+        // Les jetons restants sont réassemblés : un shell qui découpe la ligne
+        // ne doit pas empêcher de la donner sans guillemets.
+        const QString line = positional.mid(1).join(u' ');
+        if (line.isEmpty()) {
+            err() << "Usage : llamabuilder-cli parse \"<ligne de commande>\"\n" << Qt::flush;
+            return 1;
+        }
+        SettingsStore settingsStore(AppPaths::settingsFile());
+        settingsStore.load();
+        return printParsedCommand(line, settingsStore.settings(), registry);
+    }
+
     ProfileStore profileStore(AppPaths::profilesFile());
     if (!profileStore.load()) {
         err() << "Avertissement : " << profileStore.lastError() << "\n";
@@ -274,7 +330,7 @@ int main(int argc, char* argv[])
     }
 
     err() << "Commande inconnue : « " << command
-          << " ». Attendu : params, list, show, demo ou monitor.\n"
+          << " ». Attendu : params, list, show, demo, monitor ou parse.\n"
           << Qt::flush;
     return 1;
 }

@@ -63,7 +63,7 @@ sont pas sur le `PATH` et Windows n'affiche aucun message.
 ## 3. Compiler
 
 ```powershell
-.\scripts\build.ps1                      # Debug + les 110 tests
+.\scripts\build.ps1                      # Debug + les 169 tests
 .\scripts\build.ps1 -Config Release
 .\scripts\build.ps1 -NoTests             # compile seulement
 .\scripts\build.ps1 -Clean               # supprime build\msvc puis reconfigure
@@ -88,7 +88,7 @@ changer de configuration.
 ### Cibles utiles
 
 ```powershell
-cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 19 QML
+cmake --build build\msvc --config Debug --target all_qmllint    # analyse statique des 20 QML
 cmake --build build\msvc --config Debug --target llamabuilder-cli
 ```
 
@@ -178,6 +178,12 @@ Copy-Item resources\params.json "$env:APPDATA\LlamaBuilder\"
 Le chemin retenu est affiché en tête de `llamabuilder-cli params` et dans la
 fenêtre Réglages.
 
+Un paramètre déclare un `flag` — la forme que l'application **écrit** — et
+facultativement `aliases`, les autres écritures qu'elle **accepte à l'import**
+(`"flag": "-c"`, `"aliases": ["--ctx-size"]`). Pour un `tristate`, `flagOff` et
+`aliasesOff` jouent le même rôle du côté négatif. Deux paramètres ne peuvent pas
+revendiquer la même écriture : le fichier serait refusé, avec le nom du coupable.
+
 ---
 
 ## 6. Harnais console — diagnostic du noyau sans UI
@@ -189,13 +195,30 @@ fenêtre Réglages.
 .\build\msvc\Debug\llamabuilder-cli.exe demo             # profil d'exemple : espaces, enum, tristate
 .\build\msvc\Debug\llamabuilder-cli.exe monitor          # un relevé RAM / VRAM
 .\build\msvc\Debug\llamabuilder-cli.exe monitor --pid 14260   # + la part d'un processus
+.\build\msvc\Debug\llamabuilder-cli.exe parse "<ligne>"  # relit une ligne et la régénère
 ```
 
 Options : `--params-file <chemin>` pour tester un registre sans toucher à
 `%APPDATA%` ; `--pid N` pour isoler un processus.
 
 Codes de sortie : `0` succès · `1` usage · `2` `params.json` inutilisable ·
-`3` profil introuvable.
+`3` profil introuvable · `4` ligne de commande inexploitable.
+
+`parse` est le pendant de `show` : l'un génère, l'autre relit. Il imprime le
+binaire déduit, le modèle, les paramètres reconnus, les arguments libres, les
+avertissements, puis **la commande régénérée** — qui doit être équivalente à celle
+donnée.
+
+**Piège PowerShell 5.1** : passé à un exécutable natif, PowerShell supprime les
+guillemets internes d'une chaîne. Un chemin contenant des espaces arriverait donc
+découpé. Il faut les échapper :
+
+```powershell
+.\build\msvc\Debug\llamabuilder-cli.exe parse 'llama-server.exe -m \"D:/mes modeles/q.gguf\" -c 16384'
+```
+
+Ce n'est qu'une contrainte du terminal : le dialogue « Importer » de l'interface
+reçoit le texte tel quel, sans échappement.
 
 `monitor` imprime aussi les valeurs en **Mio**, unité de `nvidia-smi` : c'est ce
 qui rend le critère d'acceptation n°4 vérifiable d'un coup d'œil.
@@ -219,7 +242,7 @@ dans le noyau, pas dans l'affichage.
 ## 7. Tests
 
 ```powershell
-ctest --preset debug                     # les 4 binaires, 110 cas
+ctest --preset debug                     # les 5 binaires, 169 cas
 ctest --preset debug -R uimodels         # un seul binaire
 ctest --preset debug -V                  # sortie complète
 ```
@@ -227,8 +250,9 @@ ctest --preset debug -V                  # sortie complète
 | Binaire | Cas | Périmètre |
 |---|---|---|
 | `test_commandbuilder` | 53 | citation Windows, ordre des arguments, tous les types de paramètres |
+| `test_commandparser` | 55 | alias longs, `--x=y`, continuations de ligne, aller-retour, drapeaux ambigus |
 | `test_store` | 22 | E/S atomiques, anti-rebond, fichiers corrompus, aller-retour JSON |
-| `test_uimodels` | 13 | rôles des modèles, filtrage par section et par binaire, CRUD, validation |
+| `test_uimodels` | 17 | rôles des modèles, filtrage par section et par binaire, CRUD, validation, import |
 | `test_monitor` | 22 | seuils aux bornes, diviseur 1024³, NVML absente, sentinelle WDDM, fil dédié |
 
 Exécution directe, avec les options de QTest :
@@ -263,6 +287,12 @@ registre est donc couverte immédiatement.
    avec `nvidia-smi`. Minimise la fenêtre : le sondage s'arrête ; restaure-la, un
    relevé arrive immédiatement.
 8. Change l'**intervalle** dans les Réglages : pris en compte sans redémarrage.
+9. **Importer** : colle une commande trouvée en ligne, en formes longues. L'aperçu
+   liste les paramètres reconnus, les avertissements, et la commande que
+   l'application produira. *Créer un profil* propose un nom déduit du fichier de
+   modèle. Vérifie qu'un drapeau inconnu se retrouve bien en arguments libres.
+10. **Copier** puis **Importer** la même commande : le profil obtenu doit produire
+    une commande identique. C'est la symétrie des deux sens, vérifiable à l'œil.
 
 ---
 
@@ -288,16 +318,17 @@ registre est donc couverte immédiatement.
 CMakeLists.txt CMakePresets.json
 scripts/       dev-env.ps1 (environnement) · build.ps1 (compile + tests)
 resources/     params.json (47 paramètres, 7 sections) · fonts/ (Inter, JetBrains Mono, OFL)
-src/core/      noyau sans UI, Qt6::Core seul — AppPaths CommandBuilder JsonFile
-               ParamRegistry Profile ProfileStore Settings SettingsStore
+src/core/      noyau sans UI, Qt6::Core seul — AppPaths CommandBuilder CommandParser
+               JsonFile ParamRegistry Profile ProfileStore Settings SettingsStore
 src/monitor/   seule cible touchant windows.h et psapi — MonitorSample NvmlLibrary
                NvmlMonitor SystemMonitor MonitorWorker
 src/ui/        AppController (façade unique) · ParamFormModel · ParamFilterModel
                ProfileListModel · MonitorController · Fonts
 src/app/       main.cpp — QGuiApplication + QQmlApplicationEngine
 src/cli/       main.cpp — harnais console
-qml/           19 fichiers, Theme.qml en singleton
-tests/         test_commandbuilder · test_store · test_uimodels · test_monitor
+qml/           20 fichiers, Theme.qml en singleton
+tests/         test_commandbuilder · test_commandparser · test_store · test_uimodels
+               test_monitor
 mardown/       cahier des charges
 build/msvc/    Debug\ et Release\ (ignoré par git)
 ```

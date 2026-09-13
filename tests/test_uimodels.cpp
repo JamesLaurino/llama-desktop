@@ -78,6 +78,11 @@ private slots:
     void controllerReportsWhyLaunchIsImpossible();
     void controllerCountsSetParamsPerSection();
 
+    void controllerPreviewsImportWithoutTouchingAnything();
+    void controllerImportReplacesCurrentProfileEntirely();
+    void controllerImportCreatesProfileAndSelectsIt();
+    void controllerRefusesToImportChainedCommand();
+
 private:
     ParamRegistry m_registry;
 };
@@ -343,6 +348,110 @@ void TestUiModels::controllerCountsSetParamsPerSection()
 
     controller.resetSection(QStringLiteral("gpu"));
     QCOMPARE(controller.sectionSetCounts().value(QStringLiteral("gpu")).toInt(), 0);
+}
+
+void TestUiModels::controllerPreviewsImportWithoutTouchingAnything()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    controller.createProfile();
+    const QString before = controller.commandLine();
+
+    const QVariantMap preview = controller.analyseCommand(
+        QStringLiteral("llama-server.exe -m C:/m.gguf --ctx-size 16384 -ngl 99"));
+
+    QVERIFY(preview.value(QStringLiteral("ok")).toBool());
+    QCOMPARE(preview.value(QStringLiteral("modelPath")).toString(), QStringLiteral("C:/m.gguf"));
+    QCOMPARE(preview.value(QStringLiteral("binary")).toString(), QStringLiteral("server"));
+    QCOMPARE(preview.value(QStringLiteral("entries")).toList().size(), 2);
+    QVERIFY(preview.value(QStringLiteral("preview")).toString().contains(QStringLiteral("16384")));
+
+    // L'aperçu est une analyse, pas une application : le profil n'a pas bougé.
+    QCOMPARE(controller.commandLine(), before);
+    QVERIFY(controller.modelPath().isEmpty());
+}
+
+void TestUiModels::controllerImportReplacesCurrentProfileEntirely()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString profilesPath = dir.filePath(QStringLiteral("profiles.json"));
+    AppController controller(paramsPath(), profilesPath,
+                             dir.filePath(QStringLiteral("settings.json")));
+
+    const QString id = controller.createProfile();
+    controller.renameProfile(id, QStringLiteral("Mon profil"));
+    controller.setNotes(QStringLiteral("À conserver"));
+    controller.setParamValue(QStringLiteral("port"), QStringLiteral("9999"));
+    QVERIFY(controller.commandLine().contains(QStringLiteral("9999")));
+
+    QSignalSpy commandSpy(&controller, &AppController::commandLineChanged);
+    QVERIFY(controller.importCommandIntoCurrent(
+        QStringLiteral("llama-server.exe -m \"D:/a b/q.gguf\" --ctx-size 4096 --flash-attn on")));
+
+    // Ce qui appartient au profil survit ; ce qui décrit la commande est remplacé.
+    QCOMPARE(controller.currentProfileId(), id);
+    QCOMPARE(controller.profileName(), QStringLiteral("Mon profil"));
+    QCOMPARE(controller.notes(), QStringLiteral("À conserver"));
+    QCOMPARE(controller.modelPath(), QStringLiteral("D:/a b/q.gguf"));
+    QVERIFY(controller.commandLine().contains(QStringLiteral("4096")));
+    // Le port posé avant l'import a disparu : l'import remplace, il ne fusionne pas.
+    QVERIFY(!controller.commandLine().contains(QStringLiteral("9999")));
+    QVERIFY(commandSpy.count() > 0);
+
+    // Et le profil est bien écrit sur disque, pas seulement en mémoire. L'écriture
+    // est anti-rebondie (ProfileStore::kSaveDebounceMs) : il faut la laisser venir.
+    QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(profilesPath), 3000);
+    QTest::qWait(ProfileStore::kSaveDebounceMs);
+    AppController reopened(paramsPath(), profilesPath,
+                           dir.filePath(QStringLiteral("settings.json")));
+    QCOMPARE(reopened.modelPath(), QStringLiteral("D:/a b/q.gguf"));
+}
+
+void TestUiModels::controllerImportCreatesProfileAndSelectsIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+
+    const QString id = controller.importCommandAsNewProfile(
+        QStringLiteral("llama-cli.exe -m C:/m.gguf -c 2048"), QStringLiteral("  Importé  "));
+
+    QVERIFY(!id.isEmpty());
+    QCOMPARE(controller.currentProfileId(), id);
+    QCOMPARE(controller.profileName(), QStringLiteral("Importé"));
+    QCOMPARE(controller.binary(), QStringLiteral("cli"));
+    QCOMPARE(controller.profiles()->rowCount(), 1);
+
+    // Nom vide : un profil sans nom ne serait pas enregistrable (§4.1).
+    const QString second = controller.importCommandAsNewProfile(
+        QStringLiteral("llama-server.exe -c 512"), QString());
+    QVERIFY(!second.isEmpty());
+    QVERIFY(!controller.profileName().isEmpty());
+}
+
+void TestUiModels::controllerRefusesToImportChainedCommand()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppController controller(paramsPath(), dir.filePath(QStringLiteral("profiles.json")),
+                             dir.filePath(QStringLiteral("settings.json")));
+    controller.createProfile();
+    controller.setModelPath(QStringLiteral("C:/intact.gguf"));
+
+    const QString chained = QStringLiteral("llama-server.exe -c 512 && rd /s /q C:\\");
+    const QVariantMap preview = controller.analyseCommand(chained);
+    QVERIFY(!preview.value(QStringLiteral("ok")).toBool());
+    QVERIFY(!preview.value(QStringLiteral("error")).toString().isEmpty());
+
+    QVERIFY(!controller.importCommandIntoCurrent(chained));
+    QVERIFY(controller.importCommandAsNewProfile(chained, QStringLiteral("x")).isEmpty());
+    // Un refus ne doit rien laisser derrière lui.
+    QCOMPARE(controller.modelPath(), QStringLiteral("C:/intact.gguf"));
+    QCOMPARE(controller.profiles()->rowCount(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestUiModels)
