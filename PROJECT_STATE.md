@@ -7,10 +7,10 @@
 | Phase | Périmètre | État |
 |---|---|---|
 | **1** | Noyau sans UI : `Profile`, `Settings`, `ProfileStore`, `ParamRegistry`, `CommandBuilder`, tests | **terminée** |
-| 2 | Coque Qt Quick : thème, liste de profils, formulaire dynamique, barre de commande | à faire |
+| **2** | Coque Qt Quick : thème, liste de profils, formulaire dynamique, barre de commande, Réglages | **terminée** |
 | 3 | Monitoring : `NvmlMonitor`, `SystemMonitor`, jauges animées | à faire |
 | 4 | Exécution : `LlamaRunner`, panneau de logs, validation | à faire |
-| 5 | Finitions : recherche, duplication, géométrie, raccourcis | à faire |
+| 5 | Finitions : recherche, duplication au clavier, géométrie, raccourcis | à faire |
 
 ## Environnement retenu
 
@@ -21,6 +21,7 @@
 | Qt | **6.10.3 `msvc2022_64`**, installé dans `C:\Qt` via `aqtinstall` |
 | llama.cpp de référence | build **b10586** (`C:\dev\llama-cpp\llama-b10586-bin-win-cuda-13.3-x64`) |
 | GPU | RTX 5090 Laptop, 24 Go — `nvml.dll` présent dans `System32` |
+| Écran de développement | 3840 × 2400 à 200 % — l'application est testée sous facteur d'échelle 2 |
 
 ### Écarts assumés par rapport au cahier des charges
 
@@ -42,7 +43,15 @@
   `auto` ou `all`.
 - **`model` retiré de `params.json`.** Le chemin du modèle a son propre champ
   dans le profil ; le déclarer aussi comme paramètre créerait deux sources de
-  vérité (vérifié par un test).
+  vérité (vérifié par un test). Le formulaire lui réserve donc une carte
+  « Profil » distincte, au-dessus des sections engendrées.
+- **Deux marqueurs d'état au lieu d'un.** Le §5.3 ne prévoit qu'un badge
+  « modifié ». Un paramètre posé explicitement à sa valeur par défaut est pourtant
+  bien émis dans la commande : il reçoit un point d'accent, le badge restant
+  réservé aux valeurs qui diffèrent du défaut.
+- **Pas de bouton « Enregistrer ».** Le §5.2 exige qu'une sélection charge
+  instantanément et que « Lancer » soit aussitôt disponible : l'édition modifie le
+  profil en place et l'anti-rebond de `ProfileStore` écrit pour elle.
 - **Deux fichiers ajoutés au noyau** par rapport au §3 : `JsonFile` (lecture et
   écriture atomiques, mise à l'écart des fichiers corrompus, mutualisée entre les
   deux dépôts) et `AppPaths` (résolution des emplacements).
@@ -54,7 +63,7 @@
 Paramètres récents ajoutés : `-ncmoe`, `-cmoe`, `--swa-full`, `-cram`, `-fit`,
 `-fitt`, `-sm`, `--context-shift`, `--no-webui`, `--metrics`, `--check-tensors`.
 
-## Phase 1 — ce qui est livré
+## Phase 1 — noyau
 
 ```
 CMakeLists.txt · CMakePresets.json · scripts/dev-env.ps1 · scripts/build.ps1
@@ -81,16 +90,72 @@ Points d'architecture :
   `%APPDATA%\LlamaBuilder\` ou à côté de l'exécutable le remplace — ajouter un
   flag ne demande donc aucune recompilation.
 
+## Phase 2 — coque Qt Quick
+
+```
+src/ui/    AppController · ParamFormModel · ParamFilterModel
+           ProfileListModel · Fonts
+src/app/main.cpp               point d'entrée QGuiApplication + QQmlApplicationEngine
+qml/       Main · Theme · ProfilePanel · ParamSection · ParamRow · CommandBar
+           SettingsWindow · InfoTip · Segmented · FlatButton · ThemedTextField
+           ThemedComboBox · ThemedCheckBox · ThemedMenu · ThemedDialog
+           ConfirmDialog · NamePrompt
+resources/fonts/               Inter (Regular/Medium/SemiBold) + JetBrains Mono, OFL
+tests/test_uimodels.cpp        13 cas
+```
+
+Points d'architecture :
+
+- **Un seul modèle plat pour le formulaire.** `ParamFormModel` porte les 47
+  paramètres dans l'ordre de `params.json` et détient les valeurs du profil
+  courant ; toute écriture passe par `setValue()`. Le regroupement par section et
+  le masquage selon le binaire sont assurés par `ParamFilterModel`, un proxy de
+  filtrage instancié une fois par section depuis le QML. Une section dont le
+  `count` tombe à zéro se masque d'elle-même : le §5.3 (« Serveur » invisible en
+  mode cli) est une conséquence du filtre, pas une condition écrite dans la vue.
+- **Convention d'absence unique** : une valeur vide signifie « paramètre non
+  posé », donc retiré de la table du profil et absent de la commande. Tous les
+  contrôles l'appliquent — case décochée, « (défaut) » d'une liste, champ vidé.
+- **`AppController` est la seule façade** entre le noyau et le QML. Il détient le
+  registre, les deux dépôts et les modèles ; c'est par lui que la phase 4
+  branchera `LlamaRunner` sans toucher aux vues.
+- **Enregistrement déclaratif des types** (`QML_ELEMENT`, `QML_SINGLETON`) : les
+  sources de `src/ui/` sont compilées dans la cible qui porte le module QML, ce
+  qui permet à `qmltyperegistrar` de publier les types et donc à **qmllint
+  d'analyser statiquement les 17 fichiers QML**. Les tests recompilent la même
+  liste de sources sans module QML.
+- **Le thème du §5.7 vit dans un unique singleton `Theme.qml`** : couleurs,
+  échelle d'espacement 4/8/12/16/24/32, rayons 6/10, durées 150/200/400 ms.
+  Aucune couleur en littéral ailleurs.
+- **Style `Basic` de Qt Quick Controls**, seul style qui n'impose pas ses propres
+  couleurs ; chaque contrôle est redécoré (`background`, `contentItem`, `popup`).
+- **Recalcul synchrone de la commande** à chaque frappe, comme le §5.4
+  l'autorise : `CommandBuilder::build()` est pure, rien à différer.
+- **Polices embarquées** en ressource Qt : l'apparence ne dépend pas de ce qui est
+  installé sur la machine. Repli sur Segoe UI / Cascadia Mono si la ressource
+  manque.
+- `pragma ComponentBehavior: Bound` dans tous les fichiers à délégués : les
+  identifiants extérieurs y sont liés, jamais résolus dynamiquement.
+
 ### Contrat à ne pas casser
 
 L'application définit `applicationName` mais **pas** `organizationName` :
 `QStandardPaths` insérerait sinon un niveau supplémentaire et le dossier de
-données ne serait plus `%APPDATA%\LlamaBuilder`.
+données ne serait plus `%APPDATA%\LlamaBuilder`. Elle ne définit pas non plus
+`applicationDisplayName`, que Qt concaténerait au titre de la fenêtre.
 
 ## Validation exécutée
 
-- 75 cas de test au vert (`ctest --preset debug`), compilation sans avertissement
-  en `/W4 /permissive-`.
+- **88 cas de test au vert** (`ctest --preset debug` et `--preset release`) :
+  53 + 22 + 13.
+- Compilation **sans aucun avertissement** en `/W4 /permissive-`, en Debug comme
+  en Release. Les en-têtes Qt sont traités comme externes ; `C4702`, émis depuis
+  `qvariant.h` et `qjsengine.h` à la génération de code, est désactivé.
+- **`qmllint` sans aucun diagnostic** sur les 17 fichiers QML
+  (`cmake --build build/msvc --config Debug --target all_qmllint`).
+- Application lancée : aucun avertissement QML à l'exécution, profil réel chargé,
+  commande affichée identique à celle du harnais console, sections engendrées
+  depuis `params.json`, badge « modifié » et compteurs par section corrects.
 - Commande générée pour un modèle dont le chemin contient des espaces, copiée
   telle quelle et exécutée par `cmd.exe` : `llama-server` journalise
   `loading model 'C:\dev\llama_desktop_modeles\qwen3 27b q5.gguf'`, puis
@@ -106,20 +171,25 @@ données ne serait plus `%APPDATA%\LlamaBuilder`.
   `C:\dev\llama-cpp\models` (aucun espace disque consommé). C'est aussi le
   `defaultModelsDir` de `settings.json`.
 
-## Compiler
+## Compiler et lancer
 
 ```powershell
 .\scripts\build.ps1              # Debug + tests
 .\scripts\build.ps1 -Config Release
 .\scripts\build.ps1 -Clean
+
+.\build\msvc\Debug\llamabuilder.exe        # l'application
+.\build\msvc\Debug\llamabuilder-cli.exe params   # diagnostic du noyau
 ```
 
 Les chemins de Visual Studio et de Qt sont découverts automatiquement
 (`vswhere`, glob sur `C:\Qt`). Surcharges : `$env:VS_DIR`, `$env:QT_DIR`.
+Le script doit être appelé depuis une session où `scripts\dev-env.ps1` a été
+sourcé, sinon les DLL Qt manquent au lancement.
 
-## Prochaine étape — phase 2
+## Prochaine étape — phase 3
 
-Coque Qt Quick : fenêtre et thème du §5.7, `ProfileListModel` et
-`ParamFormModel` exposés au QML, sections repliables générées depuis
-`params.json`, info-bulles, barre de commande avec bouton Copier. Nécessitera
-d'ajouter `Qt6::Quick` et `Qt6::QuickControls2` au `CMakeLists.txt`.
+Monitoring : `NvmlMonitor` (chargement dynamique de `nvml.dll`, dégradation
+propre si absent), `SystemMonitor` pour la RAM, et les jauges animées du §5.1.
+L'emplacement est déjà réservé en haut du panneau central, et l'intervalle de
+rafraîchissement est déjà réglable dans la fenêtre Réglages.
